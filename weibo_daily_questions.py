@@ -115,10 +115,11 @@ TEACHER_SLOTS = {
 }
 
 CACHE_FILE = "weibo_search_cache.json"
-POST_CACHE_FILE = "weibo_post_cache.json"  # 缓存已抓取的帖子内容
+POST_CACHE_FILE = "weibo_post_cache.json"  # 缓存已抓取的帖子内容（24小时有效）
 
-# API频率限制: 100次/小时，每个status_show调用间隔至少0.5秒
+# API频率限制: 100次/小时
 API_DELAY = 0.6
+MAX_POSTS_TO_FETCH = 12  # 每个hashtag搜索最多抓取的帖子数
 
 
 # ============ 微博API ============
@@ -207,18 +208,46 @@ def extract_mblogids(zhisou_data):
     return sorted(mblogids, reverse=True)  # 最新的在前
 
 
-def fetch_status(mblogid, token):
-    """通过status_show API获取单条微博完整内容"""
+def load_post_cache():
+    """加载帖子缓存"""
+    if os.path.exists(POST_CACHE_FILE):
+        try:
+            with open(POST_CACHE_FILE, "r") as f:
+                cache = json.load(f)
+            cache_time = cache.get("cached_at", 0)
+            if time.time() - cache_time < 86400:  # 24小时有效
+                return cache.get("posts", {})
+        except Exception:
+            pass
+    return {}
+
+
+def save_post_cache(posts_dict):
+    """保存帖子缓存"""
+    with open(POST_CACHE_FILE, "w") as f:
+        json.dump({"cached_at": time.time(), "posts": posts_dict}, f, ensure_ascii=False)
+
+
+def fetch_status(mblogid, token, post_cache=None):
+    """通过status_show API获取单条微博完整内容（支持缓存）"""
+    # 先查缓存
+    if post_cache and mblogid in post_cache:
+        return post_cache[mblogid]
+
     url = f"{STATUS_API}?token={token}&id={mblogid}"
     try:
         resp = urllib.request.urlopen(url, timeout=15)
         result = json.loads(resp.read())
         if result.get("code") == 0:
-            return result.get("data", {})
+            data = result.get("data", {})
+            # 写入缓存
+            if post_cache is not None and data:
+                post_cache[mblogid] = data
+            return data
         elif result.get("code") == 42900:
             print(f"      ⚠️ API频率限制，等待30秒...")
             time.sleep(30)
-            return fetch_status(mblogid, token)  # 重试
+            return fetch_status(mblogid, token, post_cache)
         return None
     except Exception as e:
         print(f"      status_show异常 ({mblogid}): {e}")
@@ -229,8 +258,9 @@ def fetch_status(mblogid, token):
 
 def classify_post(post_data, teacher_filter=""):
     """
-    分类帖子类型
-    返回: ("question"|"answer"|"collection"|"other", question_number)
+    分类帖子类型，同时标注是否为第三方
+    返回: (post_type, question_number, is_third_party)
+        post_type: "question"|"answer"|"collection"|"other"
     """
     text = post_data.get("text", "")
     user = post_data.get("user", {}).get("screen_name", "")
@@ -241,21 +271,24 @@ def classify_post(post_data, teacher_filter=""):
     if num_match:
         q_num = int(num_match.group(1))
 
-    # 判断类型
-    is_answer = ('答案' in text) and ('每日一题' in text)
-    is_question = ('每日一题' in text) and ('答案' not in text) and ('解析' not in text)
-    is_collection = any(kw in text for kw in ['笔记', '整理', '汇总', '资料汇总', 'PDF', '合集'])
-    is_third_party = teacher_filter and teacher_filter not in user
+    # 判断是否为第三方（非老师本人）
+    is_third_party = bool(teacher_filter) and teacher_filter not in user
 
-    # 优先级: 答案 > 题目 > 合集
+    # 判断类型
+    has_daily = '每日一题' in text
+    is_answer = ('答案' in text) and has_daily
+    is_collection = any(kw in text for kw in ['笔记', '整理', '汇总', '资料汇总', 'PDF', '合集'])
+
     if is_answer:
-        return ("answer", q_num)
-    elif is_question and not is_collection:
-        return ("question", q_num)
+        return ("answer", q_num, is_third_party)
+    elif has_daily and ('答案' not in text) and ('解析' not in text):
+        if is_collection:
+            return ("collection", q_num, is_third_party)
+        return ("question", q_num, is_third_party)
     elif is_collection:
-        return ("collection", q_num)
+        return ("collection", q_num, is_third_party)
     else:
-        return ("other", q_num)
+        return ("other", q_num, is_third_party)
 
 
 def clean_post_text(text):
@@ -349,59 +382,86 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
     if not mblogids:
         return None
 
-    print(f"      找到 {len(mblogids)} 个引用帖，检查最近 {min(8, len(mblogids))} 个...")
+    # 如果有fallback查询（teacher名+每日一题），也搜索一次合并mblogid
+    fallback_query = f"{teacher_filter} 每日一题"
+    fb_data = search_zhisou(fallback_query, token)
+    if fb_data:
+        fb_ids = extract_mblogids(fb_data)
+        mblogids = sorted(set(mblogids + fb_ids), reverse=True)
+        print(f"      hashtag搜索: {len(set(mblogids))} 个唯一引用帖（含fallback合并）")
 
-    # Step 2: 获取最近帖子（最多8个，避免频率限制）
-    questions = []  # (mblogid, q_num, text, created_at, user)
-    answers = []    # (mblogid, q_num, text, created_at, user)
+    fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
+    print(f"      检查最近 {fetch_n} 个帖子...")
 
-    for mid in mblogids[:8]:
-        post = fetch_status(mid, token)
+    # 加载帖子缓存
+    post_cache = load_post_cache()
+
+    # Step 2: 获取帖子并分类
+    questions = []  # (mblogid, q_num, text, created_at, user, is_third)
+    answers = []    # (mblogid, q_num, text, created_at, user, is_third)
+
+    for mid in mblogids[:fetch_n]:
+        post = fetch_status(mid, token, post_cache)
         if not post:
             continue
 
-        post_type, q_num = classify_post(post, teacher_filter)
+        post_type, q_num, is_third = classify_post(post, teacher_filter)
         text = post.get("text", "")
         created = post.get("created_at", "")
         user = post.get("user", {}).get("screen_name", "")
 
         if post_type == "question":
-            questions.append((mid, q_num, text, created, user))
-            print(f"         🎯 题目帖 Q{q_num} | {user} | {created}")
+            questions.append((mid, q_num, text, created, user, is_third))
+            third_tag = "📎三方" if is_third else "👤本人"
+            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag} | {created}")
         elif post_type == "answer":
-            answers.append((mid, q_num, text, created, user))
-            print(f"         ✅ 答案帖 Q{q_num} | {user} | {created}")
+            answers.append((mid, q_num, text, created, user, is_third))
+            third_tag = "📎三方" if is_third else "👤本人"
+            print(f"         ✅ 答案帖 Q{q_num} | {user} {third_tag} | {created}")
         elif post_type == "collection":
             print(f"         📦 合集帖 | {user} | {created}")
 
         time.sleep(API_DELAY)
 
-    # Step 3: 配对Q&A
+    # 保存帖子缓存
+    save_post_cache(post_cache)
+
+    # Step 3: 配对Q&A - 优先老师本人帖子
     if not answers:
-        # 没有答案帖，如果至少有问题帖，返回问题内容
         if questions:
-            q = questions[0]
+            # 优先本人题目帖
+            own_qs = [q for q in questions if not q[5]]
+            q = own_qs[0] if own_qs else questions[0]
             weibo_link = f"https://weibo.com/detail/{q[0]}"
             return (q[2], "", weibo_link, "", f"题目帖(@{q[4]})")
         return None
 
-    # 按题号匹配：找最新答案帖 + 对应题号的题目帖
-    latest_answer = answers[0]  # mblogids已按ID降序排列，最新的在前
-    a_mid, a_num, a_text, a_created, a_user = latest_answer
+    # 优先老师本人的答案帖，其次按时间
+    own_answers = [a for a in answers if not a[5]]
+    latest_answer = own_answers[0] if own_answers else answers[0]
+    a_mid, a_num, a_text, a_created, a_user, a_third = latest_answer
 
     matching_question = None
     if a_num:
+        # 优先本人且题号匹配的题目帖
         for q in questions:
             if q[1] == a_num:
                 matching_question = q
-                break
+                if not q[5]:  # 找到本人帖就停
+                    break
 
     question_text = matching_question[2] if matching_question else ""
     question_link = f"https://weibo.com/detail/{matching_question[0]}" if matching_question else ""
     answer_link = f"https://weibo.com/detail/{a_mid}"
     source_label = f"Q{a_num}" if a_num else f"@{a_user}"
+    if a_third:
+        source_label += "(三方)"
 
-    # 如果没有配对题目，但有答案帖，用答案帖做综合摘要
+    # 处理答案帖太短的情况（视频解析）
+    if len(a_text.strip()) < 30:
+        a_text = f"📹 本题解析为视频形式，请点击下方链接查看完整讲解"
+
+    # 如果题目帖未找到，尝试从答案帖推断
     if not question_text:
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
 
