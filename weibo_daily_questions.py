@@ -11,12 +11,21 @@ import re
 import json
 import smtplib
 import time
+import tempfile
 import urllib.request
 import urllib.parse
 import urllib.error
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
+
+# OCR 可选依赖
+try:
+    from PIL import Image
+    import pytesseract
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
 
 # ============ 配置 ============
 QQ_EMAIL = "jewelljaja@foxmail.com"
@@ -366,7 +375,80 @@ def format_answer_html(answer_text):
     return format_question_html(answer_text)  # 复用同样的格式化逻辑
 
 
-# ============ 两阶段抓取：含真实帖子的为一级，AI摘要为二级 ============
+# ============ OCR 图片文字识别 ============
+
+def ocr_image(image_url):
+    """下载图片并OCR识别文字，返回识别的文本"""
+    if not HAS_OCR:
+        return None
+
+    try:
+        # 下载图片到临时文件
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+            req = urllib.request.Request(image_url, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; FakaoBot/1.0)',
+                'Referer': 'https://weibo.com/',
+            })
+            resp = urllib.request.urlopen(req, timeout=15)
+            tmp.write(resp.read())
+            tmp_path = tmp.name
+
+        # OCR识别
+        img = Image.open(tmp_path)
+        text = pytesseract.image_to_string(img, lang='chi_sim+eng')
+
+        # 清理临时文件
+        os.unlink(tmp_path)
+
+        return text.strip()
+    except Exception as e:
+        print(f"         OCR异常: {e}")
+        return None
+
+
+def try_extract_question_from_post(post_data):
+    """
+    尝试从帖子中提取题目文字。
+    优先使用帖子正文，如果正文太短且帖子有图片，尝试OCR。
+    返回: (question_text, is_from_ocr)
+    """
+    text = post_data.get("text", "").strip()
+    pics = post_data.get("pics", [])
+    has_image = post_data.get("has_image", False)
+
+    # 如果正文足够长（>30字），直接用正文
+    if len(text) > 30:
+        # 检查是否包含选项 (A. B. C. D. 等)
+        if re.search(r'[A-D][\.\、）\)]', text):
+            return (text, False)
+        return (text, False)
+
+    # 正文太短，尝试OCR图片
+    if (pics or has_image) and HAS_OCR:
+        # 获取图片URL
+        img_urls = []
+        if pics:
+            for pic in pics:
+                url = pic.get('url', '') or pic.get('large', {}).get('url', '')
+                if url:
+                    img_urls.append(url)
+
+        if not img_urls:
+            # 尝试从pic_ids构建URL（不常见但试试）
+            pic_ids = post_data.get('pic_ids', [])
+            for pid in pic_ids:
+                img_urls.append(f'https://wx1.sinaimg.cn/large/{pid}.jpg')
+
+        for img_url in img_urls[:3]:  # 最多OCR 3张图
+            ocr_text = ocr_image(img_url)
+            if ocr_text and len(ocr_text) > 20:
+                print(f"         📷 OCR成功 ({len(ocr_text)}字)")
+                return (ocr_text, True)
+
+    return (text, False)
+
+
+# ============ 两阶段抓取 ============
 
 def fetch_teacher_posts(hashtag_query, teacher_filter, token):
     """
@@ -411,9 +493,12 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
         user = post.get("user", {}).get("screen_name", "")
 
         if post_type == "question":
-            questions.append((mid, q_num, text, created, user, is_third))
+            # 尝试从帖子提取完整题目（可能需OCR）
+            q_extracted, is_ocr = try_extract_question_from_post(post)
+            questions.append((mid, q_num, q_extracted, created, user, is_third))
+            ocr_tag = " 📷OCR" if is_ocr else ""
             third_tag = "📎三方" if is_third else "👤本人"
-            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag} | {created}")
+            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{ocr_tag} | {created}")
         elif post_type == "answer":
             answers.append((mid, q_num, text, created, user, is_third))
             third_tag = "📎三方" if is_third else "👤本人"
