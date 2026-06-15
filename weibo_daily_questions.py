@@ -130,8 +130,7 @@ QUESTION_CACHE_FILE = "weibo_question_cache.json"  # 缓存每日题目帖（跨
 # API频率限制: 100次/小时
 API_DELAY = 0.6
 MAX_POSTS_TO_FETCH = 6  # 每个老师最多抓取的帖子数（8老师×6=48次，+搜索16次=64次<100限额）
-MAX_DEEP_POSTS = 30  # 当答案找不到匹配题目时，翻更深查找
-MAX_FULL_SCAN = 80   # 缓存为空时全量扫描上限（一次性回溯填充历史题目）
+MAX_DEEP_POSTS = 24  # 深度搜索：答案找不到匹配题目时翻更深
 API_CALL_COUNT = 0  # 全局API调用计数器
 API_LIMIT = 90  # 接近100前停止
 
@@ -739,9 +738,8 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                 q_source = "current"
                 print(f"      📄 当天命中: Q{a_num}题目")
 
-        # 还是没有 → 更深搜索 + 必要时全量回溯
+        # 还是没有 → 更深搜索（同时填充缓存）
         if not question_text and len(mblogids) > fetch_n and check_api_ok():
-            # 先翻到 MAX_DEEP_POSTS
             print(f"      🔍 缓存未命中，深度搜索({fetch_n+1}~{deep_n})找Q{a_num}题目...")
             for mid in mblogids[fetch_n:deep_n]:
                 if not check_api_ok():
@@ -750,50 +748,24 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                 if not post:
                     continue
                 ptype, pq_num, pthird = classify_post(post, teacher_filter)
-                if ptype == "question" and pq_num == a_num:
-                    q_extracted, _ = try_extract_question_from_post(post)
-                    question_text = q_extracted
-                    question_link = f"https://weibo.com/detail/{mid}"
-                    q_source = "deep"
-                    print(f"      🎯 深度命中: Q{a_num}题目")
-                    # 存入缓存
-                    created = post.get("created_at", "")
-                    user = post.get("user", {}).get("screen_name", "")
-                    store_question_in_cache(teacher_filter, a_num, q_extracted, question_link, created, user, question_cache)
-                    break
-                time.sleep(API_DELAY / 2)
-
-        # 🔥 缓存为空 + 深度搜索也找不到 → 全量回溯扫描（一次性）
-        if not question_text and len(mblogids) > deep_n and check_api_ok():
-            full_n = min(MAX_FULL_SCAN, len(mblogids))
-            print(f"      🔥 全量回溯({deep_n}~{full_n})填充题目缓存...")
-            found_count = 0
-            for mid in mblogids[deep_n:full_n]:
-                if not check_api_ok():
-                    break
-                post = fetch_status(mid, token, post_cache)
-                if not post:
-                    continue
-                ptype, pq_num, pthird = classify_post(post, teacher_filter)
-                if ptype == "question" and pq_num is not None and not find_question_in_cache(teacher_filter, pq_num, question_cache):
-                    q_extracted, _ = try_extract_question_from_post(post)
-                    created = post.get("created_at", "")
-                    user = post.get("user", {}).get("screen_name", "")
-                    weibo_link = f"https://weibo.com/detail/{mid}"
-                    store_question_in_cache(teacher_filter, pq_num, q_extracted, weibo_link, created, user, question_cache)
-                    found_count += 1
-                    # 检查是否命中了正在找的题号
+                if ptype == "question" and pq_num is not None:
+                    extracted, _ = try_extract_question_from_post(post)
+                    # 存入缓存（无论题号是否匹配，供后续使用）
+                    if not find_question_in_cache(teacher_filter, pq_num, question_cache):
+                        created = post.get("created_at", "")
+                        user = post.get("user", {}).get("screen_name", "")
+                        weibo_link = f"https://weibo.com/detail/{mid}"
+                        store_question_in_cache(teacher_filter, pq_num, extracted, weibo_link, created, user, question_cache)
+                    # 检查是否命中目标
                     if pq_num == a_num and not question_text:
-                        question_text = q_extracted
-                        question_link = weibo_link
-                        q_source = "fullscan"
-                if ptype == "answer" and found_count >= 5:
-                    break  # 找到5个题目帖就停，省API
-                time.sleep(API_DELAY / 3)
-            if found_count > 0:
-                print(f"      📦 全量回溯填充 {found_count} 条题目到缓存")
-            if q_source == "fullscan":
-                print(f"      🎯 全量命中: Q{a_num}题目")
+                        question_text = extracted
+                        question_link = f"https://weibo.com/detail/{mid}"
+                        q_source = "deep"
+                        print(f"      🎯 深度命中: Q{a_num}题目")
+                elif ptype == "answer" and pq_num is not None:
+                    # 答案帖也值得记录（提取题目用）
+                    pass
+                time.sleep(API_DELAY / 2)  # 深度搜索减半延迟
 
     # 处理答案帖太短的情况（视频解析）
     if len(a_text.strip()) < 30:
@@ -810,6 +782,9 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             if a_num is not None:
                 store_question_in_cache(teacher_filter, a_num, extracted_q, answer_link, a_created, a_user, question_cache)
     
+    # 🔥 持久化题目缓存（深度搜索+答案提取的结果也写入磁盘）
+    if question_cache:
+        save_question_cache(question_cache)
     # 最后的兜底
     if not question_text:
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
