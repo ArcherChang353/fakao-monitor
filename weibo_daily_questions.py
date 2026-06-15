@@ -175,7 +175,7 @@ def search_weibo(query, token):
 
 
 def clean_weibo_markdown(raw_msg):
-    """清洗微博智搜返回的markdown内容"""
+    """清洗微博智搜返回的markdown内容（第一阶段：去标签）"""
     if not raw_msg:
         return ""
 
@@ -188,6 +188,10 @@ def clean_weibo_markdown(raw_msg):
     # 移除 media-block HTML块（含内部所有内容）
     text = re.sub(r'<media-block>[\s\S]*?</media-block>', '', text)
 
+    # 清理代码块标记（```plaintext ... ``` → 保留内容，去掉围栏）
+    text = re.sub(r'```(?:plaintext|text|markdown|md)?\s*\n?', '', text)
+    text = re.sub(r'```', '', text)
+
     # 移除 HTML 标签但保留内容
     text = re.sub(r'<[^>]+>', '', text)
 
@@ -197,17 +201,131 @@ def clean_weibo_markdown(raw_msg):
     # 清理开头空白
     text = text.strip()
 
-    # 截取合理长度（邮件不宜过长）
-    if len(text) > 2000:
-        text = text[:2000] + "\n\n...(内容过长已截断，点击上方链接查看完整内容)"
-
     return text
+
+
+def format_qa_sections(raw_text, max_len=1600):
+    """
+    将AI摘要格式化为Q&A结构，自动识别题目/答案边界并加分隔。
+    返回: (question_html, answer_html) — 已含HTML标记
+    """
+    text = raw_text.strip()
+    if not text:
+        return "", ""
+
+    # ---- 第一步：Markdown 粗体 → HTML ----
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+
+    # ---- 第二步：加粗关键法律术语（仅对不在HTML标签内的文本） ----
+    def bold_outside_tags(txt, pattern, template):
+        """在非标签文本中应用加粗"""
+        parts = re.split(r'(<[^>]+>)', txt)
+        result = []
+        for part in parts:
+            if part.startswith('<') and part.endswith('>'):
+                result.append(part)
+            else:
+                result.append(re.sub(pattern, template, part))
+        return ''.join(result)
+
+    # 法条引用：《XXX法》第X条
+    text = bold_outside_tags(
+        text,
+        r'(《[^》]+》(?:第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)?)',
+        r'<strong class="law">\1</strong>'
+    )
+    # 法条号 第X条（不在《》内的独立法条号）
+    text = bold_outside_tags(
+        text,
+        r'(?<!\w)(第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)',
+        r'<strong class="law">\1</strong>'
+    )
+    # 金额/期限/百分比
+    text = bold_outside_tags(
+        text,
+        r'(\d+(?:\.\d+)?\s*(?:万元?|元)(?!\w))',
+        r'<strong class="num">\1</strong>'
+    )
+
+    # ---- 第三步：寻找Q&A边界 ----
+    split_pos = None
+    # 找第一个 "答案" "解析" 或 "以第X题为例" 等标记
+    for pattern_str in [
+        r'以第[一二三四五六七八九十百千\d]+题为例',
+        r'(?<=\n)(?:###?\s*)?(?:答案|解析|【答案】|【解析】|考点剖析|争议焦点)',
+    ]:
+        m = re.search(pattern_str, text)
+        if m and m.start() > 80:
+            split_pos = m.start()
+            break
+
+    # 如果没找到明确分隔点，在第2-3段之后分隔
+    if split_pos is None:
+        paragraphs = re.split(r'\n{2,}', text)
+        cum_len = 0
+        for i, p in enumerate(paragraphs):
+            cum_len += len(p)
+            if cum_len > 200 and i >= 1:
+                split_pos = len('\n\n'.join(paragraphs[:i+1]))
+                break
+
+    # ---- 第四步：切分 ----
+    if split_pos and split_pos > 80:
+        question_part = text[:split_pos].strip()
+        answer_part = text[split_pos:].strip()
+    else:
+        question_part = text
+        answer_part = ""
+
+    # ---- 第五步：长度控制 ----
+    if len(question_part) > max_len:
+        question_part = question_part[:max_len] + "<br><br>...(内容较长，点击链接查看完整内容)"
+
+    if answer_part and len(answer_part) > max_len:
+        answer_part = answer_part[:max_len] + "<br><br>...(内容较长，点击链接查看完整内容)"
+
+    # ---- 第六步：去除AI摘要的开场白 ----
+    intro_pattern = re.compile(
+        r'^[^。\n<br]{2,25}(?:是|为)(?:法考|法律职业|知名|资深|著名|签约)[^。\n<br]*?[。\n<br]'
+    )
+    question_part = intro_pattern.sub('', question_part, count=1).strip()
+
+    # 去除可能残留的纯介绍性开头
+    if question_part.startswith('<strong') or question_part.startswith('以下'):
+        pass  # 保留
+
+    # ---- 第七步：转义残留特殊字符（保护已生成的HTML标签） ----
+    def escape_unless_tag(s):
+        parts = re.split(r'(<[^>]+>)', s)
+        result = []
+        for part in parts:
+            if part.startswith('<') and part.endswith('>'):
+                result.append(part)
+            else:
+                result.append(part.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+        return ''.join(result)
+
+    question_part = escape_unless_tag(question_part)
+    if answer_part:
+        answer_part = escape_unless_tag(answer_part)
+
+    # 清理多余分隔线
+    question_part = re.sub(r'\n*---+\n*$', '', question_part)
+    if answer_part:
+        answer_part = re.sub(r'^\n*---+\n*', '', answer_part)
+
+    # 换行 → <br>
+    question_part = question_part.replace('\n', '<br>')
+    if answer_part:
+        answer_part = answer_part.replace('\n', '<br>')
+
+    return question_part, answer_part
 
 
 def try_search_slot(queries, token):
     """
     对一个科目按优先级依次尝试搜索词，返回第一个成功的结果。
-    返回: (source_label, content, weibo_link, is_alternative) 或 None
+    返回: (source_label, question_html, answer_html, weibo_link, is_alternative) 或 None
     """
     for i, q in enumerate(queries):
         label = q["label"]
@@ -218,9 +336,10 @@ def try_search_slot(queries, token):
             raw_msg = data.get("msg", "")
             if len(raw_msg) > 50:
                 cleaned = clean_weibo_markdown(raw_msg)
+                question_html, answer_html = format_qa_sections(cleaned)
                 scheme = data.get("scheme", "")
                 weibo_link = scheme.replace("sinaweibo://", "https://weibo.com/") if scheme else ""
-                return (label, cleaned, weibo_link, is_alt)
+                return (label, question_html, answer_html, weibo_link, is_alt)
 
     return None
 
@@ -249,143 +368,149 @@ def send_email(subject, html_body):
 # ============ 报告构建 ============
 
 def build_html_report(slot_results):
-    """构建HTML邮件"""
-    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y年%m月%d日")
+    """构建简洁Q&A格式HTML邮件"""
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%m月%d日")
     weekday_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     weekday = weekday_map[datetime.now(timezone(timedelta(hours=8))).weekday()]
 
     html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-body {{ font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #2c3e50; line-height: 1.8; max-width: 720px; margin: 20px auto; padding: 0 16px; }}
-.header {{ background: linear-gradient(135deg, #c0392b, #e74c3c); color: #fff; padding: 24px 28px; border-radius: 12px 12px 0 0; margin-bottom: 0; }}
-.header h1 {{ margin: 0; font-size: 20px; font-weight: 600; }}
-.header .sub {{ font-size: 13px; opacity: 0.85; margin-top: 4px; }}
-.alert {{ background: #ffeaa7; border-left: 4px solid #fdcb6e; padding: 12px 16px; margin: 12px 0; border-radius: 4px; font-size: 14px; }}
-.alert .badge {{ background: #e74c3c; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: bold; margin-right: 4px; }}
-.alert .badge-alt {{ background: #6c5ce7; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: bold; }}
-.card {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; margin: 14px 0; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
-.card-header {{ padding: 14px 18px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
-.card-header .dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
-.card-header .subject {{ font-weight: 600; font-size: 15px; }}
-.card-header .source {{ font-size: 12px; color: #888; margin-left: 4px; }}
-.card-header .tag {{ font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #fff; flex-shrink: 0; }}
-.card-header .tag-alt {{ font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #fff; flex-shrink: 0; background: #6c5ce7; }}
-.card-body {{ padding: 14px 18px; font-size: 13.5px; }}
-.card-body p {{ margin: 4px 0; }}
-.card-body h1, .card-body h2, .card-body h3 {{ font-size: 15px; margin: 8px 0 4px; color: #c0392b; }}
-.card-body strong {{ color: #2c3e50; }}
-.link-row {{ padding: 10px 18px; border-top: 1px solid #f5f5f5; background: #fafafa; font-size: 13px; }}
-.link-row a {{ color: #2980b9; text-decoration: none; }}
-.link-row a:hover {{ text-decoration: underline; }}
-.no-result {{ color: #bdc3c7; font-style: italic; padding: 14px 18px; }}
-.summary {{ background: #f8f9fa; border-radius: 8px; padding: 16px; margin: 14px 0; font-size: 13px; }}
-.summary table {{ width: 100%; border-collapse: collapse; font-size: 12.5px; }}
-.summary th {{ background: #2c3e50; color: #fff; padding: 6px 10px; text-align: left; font-weight: 500; }}
-.summary td {{ padding: 5px 10px; border-bottom: 1px solid #eee; }}
-.status-active {{ color: #27ae60; font-weight: 600; }}
-.status-alt {{ color: #6c5ce7; font-weight: 600; }}
-.status-inactive {{ color: #95a5a6; }}
-.footer {{ color: #999; font-size: 11px; text-align: center; margin: 24px 0; padding: 16px; }}
-.footer a {{ color: #999; }}
-.legend {{ font-size: 11px; color: #999; margin-top: 4px; }}
-@media (prefers-color-scheme: dark) {{
-  body {{ background: #1a1a2e; color: #ddd; }}
-  .card {{ background: #16213e; border-color: #0f3460; }}
-  .card-header {{ border-color: #0f3460; }}
-  .card-body strong {{ color: #eee; }}
-  .link-row {{ background: #0f3460; border-color: #1a1a2e; }}
-  .link-row a {{ color: #74b9ff; }}
-  .summary {{ background: #16213e; }}
-  .summary td {{ border-color: #0f3460; }}
-  .no-result {{ color: #636e72; }}
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body {{ font-family: -apple-system,'PingFang SC','Microsoft YaHei',sans-serif; color:#2c3e50; line-height:1.8; max-width:680px; margin:0 auto; padding:0; background:#f5f6fa; }}
+.header {{ background: linear-gradient(135deg,#1a1a2e,#16213e); color:#fff; padding:20px 22px; text-align:center; }}
+.header h1 {{ margin:0; font-size:18px; font-weight:600; letter-spacing:1px; }}
+.header .date {{ font-size:12px; opacity:.7; margin-top:4px; }}
+.card {{ background:#fff; margin:10px 12px; border-radius:10px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.06); }}
+.card-head {{ padding:12px 16px; display:flex; align-items:center; gap:8px; border-bottom:1px solid #f0f0f0; }}
+.card-head .dot {{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }}
+.card-head .name {{ font-weight:600; font-size:14px; }}
+.card-head .src {{ font-size:11px; color:#999; }}
+.card-head .badge {{ font-size:10px; padding:1px 7px; border-radius:8px; color:#fff; flex-shrink:0; }}
+.q-section {{ padding:14px 16px; font-size:13.5px; color:#2c3e50; }}
+.q-section .q-label {{ display:inline-block; background:#fff3cd; color:#856404; font-size:10px; padding:2px 8px; border-radius:8px; font-weight:600; margin-bottom:8px; letter-spacing:1px; }}
+/* 答案分隔区——大幅留白+分割线 */
+.a-divider {{ margin:0 16px; border:none; border-top:2px dashed #e0e0e0; position:relative; height:40px; display:flex; align-items:center; justify-content:center; }}
+.a-divider span {{ background:#fff; padding:0 12px; font-size:11px; color:#bbb; letter-spacing:2px; position:absolute; }}
+/* 答案区域 */
+.a-section {{ padding:6px 16px 18px; font-size:13.5px; color:#555; }}
+.a-section .a-label {{ display:inline-block; background:#d4edda; color:#155724; font-size:10px; padding:2px 8px; border-radius:8px; font-weight:600; margin-bottom:8px; letter-spacing:1px; }}
+.no-result {{ padding:16px; color:#bbb; font-size:13px; text-align:center; font-style:italic; }}
+/* 重点加粗样式 */
+strong,strong.law {{ color:#c0392b; font-weight:600; }}
+strong.crime {{ color:#e67e22; font-weight:600; }}
+strong.num {{ color:#2980b9; font-weight:600; }}
+.link-row {{ padding:8px 16px; background:#fafafa; border-top:1px solid #f5f5f5; font-size:12px; }}
+.link-row a {{ color:#6c5ce7; text-decoration:none; }}
+.link-row a:hover {{ text-decoration:underline; }}
+.summary {{ background:#f8f9fa; margin:10px 12px; border-radius:8px; padding:12px 16px; font-size:12px; color:#888; text-align:center; }}
+.summary b {{ color:#2c3e50; }}
+.footer {{ text-align:center; padding:16px; font-size:10px; color:#ccc; }}
+.footer a {{ color:#ccc; }}
+@media (prefers-color-scheme:dark) {{
+  body {{ background:#1a1a2e; color:#ddd; }}
+  .card {{ background:#16213e; border:1px solid #0f3460; }}
+  .card-head {{ border-color:#0f3460; }}
+  .q-section {{ color:#ddd; }}
+  .a-section {{ color:#bbb; }}
+  .a-divider span {{ background:#16213e; }}
+  .summary {{ background:#16213e; color:#888; }}
+  .summary b {{ color:#ddd; }}
+  .no-result {{ color:#555; }}
+  .link-row {{ background:#0f3460; border-color:#1a1a2e; }}
 }}
 </style></head><body>
 <div class="header">
-  <h1>📝 法考每日一题 | 微博智搜版（多源替代）</h1>
-  <div class="sub">{today} {weekday} · 8大学科 · AI智能总结 · 主师+替代名师</div>
+  <h1>📝 法考每日一题</h1>
+  <div class="date">{today} {weekday}</div>
 </div>
 """
-
     # 统计
     success_count = 0
     alt_count = 0
 
     for subject, result in slot_results.items():
         color = result.get("color", "#636e72")
-
-        html += f'<div class="card">\n'
-        html += f'  <div class="card-header">\n'
-        html += f'    <span class="dot" style="background:{color}"></span>\n'
-        html += f'    <span class="subject">{subject}</span>\n'
-
         source_label = result.get("source_label", "")
         is_alternative = result.get("is_alternative", False)
-        content = result.get("content", "")
+        question_html = result.get("question", "")
+        answer_html = result.get("answer", "")
         weibo_link = result.get("weibo_link", "")
+        error = result.get("error", False)
+        has_content = bool(question_html and not error)
 
-        if content and not result.get("error"):
+        if has_content:
             success_count += 1
             if is_alternative:
                 alt_count += 1
-                html += f'    <span class="source">{source_label}</span>\n'
-                html += f'    <span class="tag-alt">📡替代源</span>\n'
+
+        html += '<div class="card">\n'
+        html += '  <div class="card-head">\n'
+        html += f'    <span class="dot" style="background:{color}"></span>\n'
+        html += f'    <span class="name">{subject}</span>\n'
+        if has_content and source_label:
+            html += f'    <span class="src">{source_label}</span>\n'
+        if has_content:
+            if is_alternative:
+                html += f'    <span class="badge" style="background:#6c5ce7">替代</span>\n'
             else:
-                html += f'    <span class="source">{source_label}</span>\n'
-                html += f'    <span class="tag" style="background:#27ae60">AI已总结</span>\n'
-        elif result.get("error"):
-            html += f'    <span class="tag" style="background:#f39c12">获取失败</span>\n'
+                html += f'    <span class="badge" style="background:#27ae60">已更新</span>\n'
+        elif error:
+            html += f'    <span class="badge" style="background:#f39c12">故障</span>\n'
         else:
-            html += f'    <span class="tag" style="background:#95a5a6">暂未搜到</span>\n'
+            html += f'    <span class="badge" style="background:#bbb">暂无</span>\n'
+        html += '  </div>\n'
 
-        html += f'  </div>\n'
+        if has_content:
+            # 判断是否有实质性答案分离
+            a_len = len(answer_html) if answer_html else 0
+            
+            if a_len >= 100:
+                # 有足够长的答案：显示Q&A分隔模式
+                html += '  <div class="q-section">\n'
+                html += '    <span class="q-label">📌 题目</span><br>\n'
+                html += f'    {question_html}\n'
+                html += '  </div>\n'
 
-        if content and not result.get("error"):
-            clean_content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            clean_content = clean_content.replace("\n", "<br>")
-            html += f'  <div class="card-body">{clean_content}</div>\n'
-        elif result.get("error"):
-            html += f'  <div class="no-result">⚠️ {result["error"]}</div>\n'
+                html += '  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>\n'
+
+                html += '  <div class="a-section">\n'
+                html += '    <span class="a-label">✅ 答案 / 解析</span><br>\n'
+                html += f'    {answer_html}\n'
+                html += '  </div>\n'
+            else:
+                # 答案太短或无法分离：显示为综合摘要
+                html += '  <div class="q-section">\n'
+                html += '    <span class="q-label">📌 综合摘要</span><br>\n'
+                html += f'    {question_html}\n'
+                if answer_html:
+                    html += '    <br><br><span style="display:inline-block;background:#d4edda;color:#155724;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;">✅ 答案</span><br>\n'
+                    html += f'    {answer_html}\n'
+                else:
+                    html += '    <br><br><em style="color:#999;font-size:12px;">（AI摘要未分离出独立答案段落，建议点击下方链接查看原文）</em>\n'
+                html += '  </div>\n'
+        elif error:
+            html += f'  <div class="no-result">⚠️ {error}</div>\n'
         else:
-            html += f'  <div class="no-result">🔍 微博智搜暂未检索到该科目每日一题，主师及替代名师均未命中。</div>\n'
+            html += '  <div class="no-result">🔍 今日暂未检索到该科目每日一题</div>\n'
 
         if weibo_link:
             html += f'  <div class="link-row">🔗 <a href="{weibo_link}">在微博查看原文</a></div>\n'
 
-        html += f'</div>\n'
+        html += '</div>\n'
 
-    # 汇总表
-    html += '<div class="summary"><strong>📊 今日覆盖率</strong>\n<table>\n<tr><th>科目</th><th>来源</th><th>状态</th></tr>\n'
-    for subject, result in slot_results.items():
-        content = result.get("content", "")
-        source_label = result.get("source_label", "")
-        is_alt = result.get("is_alternative", False)
-        error = result.get("error", False)
-
-        if content and not error:
-            if is_alt:
-                status = f'<span class="status-alt">📡 替代源</span>'
-            else:
-                status = '<span class="status-active">✅ 已获取</span>'
-        elif error:
-            status = '<span class="status-inactive">获取失败</span>'
-        else:
-            status = '<span class="status-inactive">暂未获取</span>'
-
-        source_short = source_label.replace("📡替代", "").strip() if source_label else "-"
-        html += f'<tr><td>{subject}</td><td>{source_short}</td><td>{status}</td></tr>\n'
-    html += '</table>'
-
+    # 简化汇总
+    total = len(slot_results)
+    html += '<div class="summary">\n'
+    html += f'<b>{success_count}/{total}</b> 科目已获取 · '
     if alt_count > 0:
-        html += f'<p class="legend">📡 共 {alt_count} 个科目使用了替代名师（主师无内容时自动切换）</p>'
-    html += '</div>\n'
+        html += f'<b>{alt_count}</b> 个使用替代名师 · '
+    html += '自动生成于 GitHub Actions</div>\n'
 
-    html += f"""<div class="footer">
-<p>☁️ 本报告由法考云端监控系统自动生成 · GitHub Actions · 微博智搜AI | 每日8:30推送</p>
-<p>数据来源：微博龙虾助手（open-im.api.weibo.com）· 主师+替代名师多源抓取</p>
-<p>替代机构：瑞达、厚大、华图 | 民诉→韩心怡 三国法→殷敏 理论法→杜洪波/宋光明 民法→钟秀勇/张翔</p>
-<p><a href="https://github.com/ArcherChang353/fakao-monitor">GitHub 仓库</a></p>
-</div>
-</body></html>"""
+    html += '<div class="footer">\n'
+    html += '<p>☁️ 法考云端监控 · 每日8:30 · 主师+替代名师多源抓取</p>\n'
+    html += '<p>替代机构：瑞达 厚大 | 民法→钟秀勇/张翔 民诉→韩心怡 三国→殷敏 理论→杜洪波/宋光明</p>\n'
+    html += '</div>\n'
+    html += '</body></html>'
 
     return html
 
@@ -430,11 +555,13 @@ def main():
             result = try_search_slot(queries, token)
 
             if result:
-                source_label, content, weibo_link, is_alt = result
+                source_label, question_html, answer_html, weibo_link, is_alt = result
+                content_len = len(question_html) + len(answer_html)
                 slot_results[subject] = {
                     "color": color,
                     "source_label": source_label,
-                    "content": content,
+                    "question": question_html,
+                    "answer": answer_html,
                     "weibo_link": weibo_link,
                     "is_alternative": is_alt,
                     "error": False,
@@ -442,14 +569,15 @@ def main():
                 success_count += 1
                 if is_alt:
                     alt_count += 1
-                    print(f"   📡 替代源命中: {source_label} ({len(content)} 字符)")
+                    print(f"   📡 替代源命中: {source_label} ({content_len} 字符)")
                 else:
-                    print(f"   ✅ 主师命中: {source_label} ({len(content)} 字符)")
+                    print(f"   ✅ 主师命中: {source_label} ({content_len} 字符)")
             else:
                 slot_results[subject] = {
                     "color": color,
                     "source_label": "",
-                    "content": "",
+                    "question": "",
+                    "answer": "",
                     "weibo_link": "",
                     "is_alternative": False,
                     "error": False,
@@ -460,7 +588,8 @@ def main():
             slot_results[subject] = {
                 "color": color,
                 "source_label": "",
-                "content": "",
+                "question": "",
+                "answer": "",
                 "weibo_link": "",
                 "is_alternative": False,
                 "error": str(e),
