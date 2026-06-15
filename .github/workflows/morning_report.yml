@@ -1,4 +1,4 @@
-name: 法考每日一题 v3.0（真实帖子抓取）（8:30）
+name: 法考每日一题 v3.1（跨天缓存Q&A配对）（8:30）
 
 on:
   schedule:
@@ -28,7 +28,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Weibo daily questions（v3.0 真实帖子抓取）
+      - name: Run Weibo daily questions（v3.1 跨天缓存Q&A配对）
         env:
           QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
           WEIBO_APP_ID: ${{ secrets.WEIBO_APP_ID }}
@@ -41,5 +41,6 @@ jobs:
           git config user.email "bot@fakao-monitor.local"
           git add weibo_search_cache.json
           git add weibo_post_cache.json 2>/dev/null || true
+          git add weibo_question_cache.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: update weibo caches [skip ci]"
           git push

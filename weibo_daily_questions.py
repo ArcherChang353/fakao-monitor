@@ -125,10 +125,12 @@ TEACHER_SLOTS = {
 
 CACHE_FILE = "weibo_search_cache.json"
 POST_CACHE_FILE = "weibo_post_cache.json"  # 缓存已抓取的帖子内容（24小时有效）
+QUESTION_CACHE_FILE = "weibo_question_cache.json"  # 缓存每日题目帖（跨天配对答案用）
 
 # API频率限制: 100次/小时
 API_DELAY = 0.6
 MAX_POSTS_TO_FETCH = 6  # 每个老师最多抓取的帖子数（8老师×6=48次，+搜索16次=64次<100限额）
+MAX_DEEP_POSTS = 12  # 当答案找不到匹配题目时，翻更深查找
 API_CALL_COUNT = 0  # 全局API调用计数器
 API_LIMIT = 90  # 接近100前停止
 
@@ -194,8 +196,9 @@ def get_weibo_token(force_refresh=False):
         raise Exception(f"Token获取异常: {e}")
 
 
-def search_zhisou(query, token):
-    """调用微博智搜API，返回原始数据。遇频率限制自动刷新token"""
+def search_zhisou(query, token, _retry=0):
+    """调用微博智搜API，返回原始数据。遇频率限制自动刷新token（最多重试2次）"""
+    MAX_RETRY = 2
     url = f"{SEARCH_ENDPOINT}?query={urllib.parse.quote(query)}&token={token}"
 
     try:
@@ -205,11 +208,16 @@ def search_zhisou(query, token):
         code = data.get("code")
 
         if code == 42900:
-            print(f"      ⚠️ Token频率限制，尝试刷新...")
+            if _retry >= MAX_RETRY:
+                print(f"      ❌ Token频率限制，已重试{_retry}次，放弃")
+                return None
+            wait = 10 * (_retry + 1)
+            print(f"      ⚠️ Token频率限制，等待{wait}s后刷新重试({_retry+1}/{MAX_RETRY})...")
+            time.sleep(wait)
             try:
                 new_token = get_weibo_token(force_refresh=True)
                 if new_token and new_token != token:
-                    return search_zhisou(query, new_token)
+                    return search_zhisou(query, new_token, _retry + 1)
             except Exception as e:
                 print(f"      ❌ Token刷新失败: {e}")
             return None
@@ -272,6 +280,57 @@ def save_post_cache(posts_dict):
     """保存帖子缓存"""
     with open(POST_CACHE_FILE, "w") as f:
         json.dump({"cached_at": time.time(), "posts": posts_dict}, f, ensure_ascii=False)
+
+
+# ============ 题目缓存（跨天Q&A配对） ============
+
+def load_question_cache():
+    """
+    加载题目缓存。结构: { "teacher_QNum": {
+        "q_num": 46, "text": "题目内容", "weibo_link": "...",
+        "created_at": "...", "user": "...", "cached_on": "2026-06-14"
+    }}
+    缓存保留3天，过期自动清理。
+    """
+    if os.path.exists(QUESTION_CACHE_FILE):
+        try:
+            with open(QUESTION_CACHE_FILE, "r") as f:
+                cache = json.load(f)
+            # 清理3天前的缓存
+            cutoff = time.time() - 259200
+            stale = [k for k, v in cache.items() if v.get("cached_ts", 0) < cutoff]
+            for k in stale:
+                del cache[k]
+            return cache
+        except Exception:
+            pass
+    return {}
+
+
+def save_question_cache(cache):
+    """保存题目缓存"""
+    with open(QUESTION_CACHE_FILE, "w") as f:
+        json.dump(cache, f, ensure_ascii=False)
+
+
+def find_question_in_cache(teacher_filter, q_num, cache):
+    """从缓存中查找匹配的题目"""
+    key = f"{teacher_filter}_{q_num}"
+    return cache.get(key)
+
+
+def store_question_in_cache(teacher_filter, q_num, text, weibo_link, created_at, user, cache):
+    """将题目存入缓存，key={老师名}_{题号}"""
+    key = f"{teacher_filter}_{q_num}"
+    cache[key] = {
+        "q_num": q_num,
+        "text": text,
+        "weibo_link": weibo_link,
+        "created_at": created_at,
+        "user": user,
+        "cached_ts": time.time(),
+        "cached_on": datetime.now().strftime("%Y-%m-%d"),
+    }
 
 
 def fetch_status(mblogid, token, post_cache=None):
@@ -495,11 +554,26 @@ def try_extract_question_from_post(post_data):
 
 # ============ 两阶段抓取 ============
 
-def fetch_teacher_posts(hashtag_query, teacher_filter, token):
+def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=None):
     """
-    一级抓取：通过hashtag搜索获取真实帖子，返回配对好的Q&A
-    返回: (question_text, answer_text, question_link, answer_link, source_label) 或 None
+    一级抓取：通过hashtag搜索获取真实帖子，配对Q&A。
+    
+    老师更新逻辑：今天发新题目(Q_new) + 昨天题目的答案(A_old)
+    所以需要跨天配对：今天的答案A_N，对应昨天缓存的题目Q_N
+    
+    返回: {
+        "question_text": str,   # 题目内容（从缓存或当天帖子）
+        "answer_text": str,     # 答案内容
+        "question_link": str,   # 题目微博链接
+        "answer_link": str,     # 答案微博链接
+        "source_label": str,    # 来源标注 e.g. "Q46✅完整"
+        "q_num": int,           # 题号
+        "is_complete": bool,    # 是否题目+答案完整配对
+    } 或 None
     """
+    if question_cache is None:
+        question_cache = {}
+    
     # Step 1: 搜索hashtag获取mblogids
     data = search_zhisou(hashtag_query, token)
     if not data:
@@ -509,7 +583,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
     if not mblogids:
         return None
 
-    # 如果有fallback查询（teacher名+每日一题），也搜索一次合并mblogid
+    # 合并fallback查询的mblogid
     if check_api_ok():
         fallback_query = f"{teacher_filter} 每日一题"
         fb_data = search_zhisou(fallback_query, token)
@@ -549,6 +623,10 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
             ocr_tag = " 📷OCR" if is_ocr else ""
             third_tag = "📎三方" if is_third else "👤本人"
             print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{ocr_tag} | {created}")
+            # 🔥 存入题目缓存，供明天配对答案
+            if q_num is not None:
+                weibo_link = f"https://weibo.com/detail/{mid}"
+                store_question_in_cache(teacher_filter, q_num, q_extracted, weibo_link, created, user, question_cache)
         elif post_type == "answer":
             answers.append((mid, q_num, text, created, user, is_third))
             third_tag = "📎三方" if is_third else "👤本人"
@@ -560,47 +638,114 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
 
     # 保存帖子缓存
     save_post_cache(post_cache)
+    # 保存题目缓存（跨天生效）
+    save_question_cache(question_cache)
 
-    # Step 3: 配对Q&A - 优先老师本人帖子
-    if not answers:
+    # Step 3: 配对Q&A —— 核心逻辑
+    # 优先老师本人答案帖，按时间排序
+    own_answers = [a for a in answers if not a[5]]
+    all_answers = own_answers + [a for a in answers if a[5]]  # 本人优先
+    
+    if not all_answers:
+        # 没有答案帖，但有题目帖 → 返回新题目（等明天的答案）
         if questions:
-            # 优先本人题目帖
             own_qs = [q for q in questions if not q[5]]
             q = own_qs[0] if own_qs else questions[0]
-            weibo_link = f"https://weibo.com/detail/{q[0]}"
-            return (q[2], "", weibo_link, "", f"题目帖(@{q[4]})")
+            q_mid, q_num, q_text, q_created, q_user, q_third = q
+            weibo_link = f"https://weibo.com/detail/{q_mid}"
+            return {
+                "question_text": q_text,
+                "answer_text": f"📌 今日新题，答案将于明日公布",
+                "question_link": weibo_link,
+                "answer_link": "",
+                "source_label": f"Q{q_num} 🆕新题" if q_num else f"题目帖(@{q_user})",
+                "q_num": q_num,
+                "is_complete": False,
+            }
         return None
 
-    # 优先老师本人的答案帖，其次按时间
-    own_answers = [a for a in answers if not a[5]]
-    latest_answer = own_answers[0] if own_answers else answers[0]
-    a_mid, a_num, a_text, a_created, a_user, a_third = latest_answer
+    # 从答案帖出发，找匹配题目
+    # 逻辑：今天的答案A_N → 题目Q_N在昨天，应从缓存中找
+    best_answer = all_answers[0]
+    a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
+    
+    # 查找匹配题目：优先缓存，其次当天帖子
+    question_text = ""
+    question_link = ""
+    q_source = ""  # "cache" | "current" | "deep" | ""(not found)
+    
+    if a_num is not None:
+        # 🔥 关键：先查题目缓存（昨天的题目）
+        cached_q = find_question_in_cache(teacher_filter, a_num, question_cache)
+        if cached_q:
+            question_text = cached_q.get("text", "")
+            question_link = cached_q.get("weibo_link", "")
+            q_source = "cache"
+            print(f"      📦 缓存命中: Q{a_num}题目（{cached_q.get('cached_on','?')}存入）")
+        
+        # 缓存没命中，查当天帖子中是否有同号题目
+        if not question_text:
+            matching_qs = [q for q in questions if q[1] == a_num]
+            if matching_qs:
+                # 优先本人
+                own_match = [q for q in matching_qs if not q[5]]
+                q = own_match[0] if own_match else matching_qs[0]
+                question_text = q[2]
+                question_link = f"https://weibo.com/detail/{q[0]}"
+                q_source = "current"
+                print(f"      📄 当天命中: Q{a_num}题目")
 
-    matching_question = None
-    if a_num:
-        # 优先本人且题号匹配的题目帖
-        for q in questions:
-            if q[1] == a_num:
-                matching_question = q
-                if not q[5]:  # 找到本人帖就停
+        # 还是没有 → 尝试更深搜索
+        if not question_text and len(mblogids) > fetch_n and check_api_ok():
+            deep_n = min(MAX_DEEP_POSTS, len(mblogids))
+            print(f"      🔍 缓存未命中，深度搜索({fetch_n+1}~{deep_n})找Q{a_num}题目...")
+            for mid in mblogids[fetch_n:deep_n]:
+                if not check_api_ok():
                     break
-
-    question_text = matching_question[2] if matching_question else ""
-    question_link = f"https://weibo.com/detail/{matching_question[0]}" if matching_question else ""
-    answer_link = f"https://weibo.com/detail/{a_mid}"
-    source_label = f"Q{a_num}" if a_num else f"@{a_user}"
-    if a_third:
-        source_label += "(三方)"
+                post = fetch_status(mid, token, post_cache)
+                if not post:
+                    continue
+                ptype, pq_num, pthird = classify_post(post, teacher_filter)
+                if ptype == "question" and pq_num == a_num:
+                    q_extracted, _ = try_extract_question_from_post(post)
+                    question_text = q_extracted
+                    question_link = f"https://weibo.com/detail/{mid}"
+                    q_source = "deep"
+                    print(f"      🎯 深度命中: Q{a_num}题目（翻到第{deep_n}页）")
+                    break
+                time.sleep(API_DELAY / 2)  # 深度搜索减半延迟
 
     # 处理答案帖太短的情况（视频解析）
     if len(a_text.strip()) < 30:
         a_text = f"📹 本题解析为视频形式，请点击下方链接查看完整讲解"
 
-    # 如果题目帖未找到，尝试从答案帖推断
+    # 如果题目仍未找到，给出提示
     if not question_text:
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
+        question_link = ""
 
-    return (question_text, a_text, question_link, answer_link, source_label)
+    answer_link = f"https://weibo.com/detail/{a_mid}"
+    
+    # 构建来源标注
+    if a_num:
+        if q_source:
+            source_label = f"Q{a_num} ✅完整({q_source})"
+        else:
+            source_label = f"Q{a_num} ⚠️缺题目"
+    else:
+        source_label = f"@{a_user}"
+    if a_third:
+        source_label += "(三方)"
+
+    return {
+        "question_text": question_text,
+        "answer_text": a_text,
+        "question_link": question_link,
+        "answer_link": answer_link,
+        "source_label": source_label,
+        "q_num": a_num,
+        "is_complete": bool(q_source),
+    }
 
 
 def fetch_teacher_fallback(fallback_queries, token):
@@ -793,14 +938,15 @@ strong.num {{ color:#2980b9; font-weight:600; }}
   .link-row {{ background:#0f3460; border-color:#1a1a2e; }}
 }}
 </style></head><body>
-<div class="header">
+    <div class="header">
   <h1>📝 法考每日一题</h1>
   <div class="date">{today} {weekday}</div>
-  <div class="sub">v3.0 · 真实帖子抓取 · Hashtag搜索+内容配对</div>
+  <div class="sub">v3.1 · 跨天缓存配对 · 题目+答案完整呈现</div>
 </div>
 """
     success_count = 0
     real_post_count = 0  # 从真实帖子获取的
+    complete_count = 0   # Q&A完整配对的
     alt_count = 0
 
     for subject, result in slot_results.items():
@@ -808,6 +954,7 @@ strong.num {{ color:#2980b9; font-weight:600; }}
         source_label = result.get("source_label", "")
         is_alternative = result.get("is_alternative", False)
         is_real_post = result.get("is_real_post", False)
+        is_complete = result.get("is_complete", False)
         question_html = result.get("question", "")
         answer_html = result.get("answer", "")
         question_link = result.get("question_link", "")
@@ -819,6 +966,8 @@ strong.num {{ color:#2980b9; font-weight:600; }}
             success_count += 1
             if is_real_post:
                 real_post_count += 1
+            if is_complete:
+                complete_count += 1
             if is_alternative:
                 alt_count += 1
 
@@ -829,8 +978,18 @@ strong.num {{ color:#2980b9; font-weight:600; }}
         if has_content and source_label:
             html += f'    <span class="src">{source_label}</span>\n'
         if has_content:
-            badge_text = "📡真实帖" if is_real_post else ("替代" if is_alternative else "已更新")
-            badge_color = "#27ae60" if is_real_post else ("#6c5ce7" if is_alternative else "#27ae60")
+            if is_real_post and is_complete:
+                badge_text = "📡完整Q&A"
+                badge_color = "#27ae60"
+            elif is_real_post:
+                badge_text = "📡新题"
+                badge_color = "#3498db"
+            elif is_alternative:
+                badge_text = "替代"
+                badge_color = "#6c5ce7"
+            else:
+                badge_text = "已更新"
+                badge_color = "#27ae60"
             html += f'    <span class="badge" style="background:{badge_color}">{badge_text}</span>\n'
         elif error:
             html += f'    <span class="badge" style="background:#f39c12">故障</span>\n'
@@ -893,6 +1052,8 @@ strong.num {{ color:#2980b9; font-weight:600; }}
     total = len(slot_results)
     html += '<div class="summary">\n'
     html += f'<b>{success_count}/{total}</b> 科目已获取'
+    if complete_count > 0:
+        html += f' · <b>{complete_count}</b> 完整Q&A 🔗'
     if real_post_count > 0:
         html += f' · <b>{real_post_count}</b> 来自真实帖子 📡'
     if alt_count > 0:
@@ -900,7 +1061,7 @@ strong.num {{ color:#2980b9; font-weight:600; }}
     html += ' · 自动生成于 GitHub Actions</div>\n'
 
     html += '<div class="footer">\n'
-    html += '<p>☁️ 法考云端监控 v3.0 · 每日8:30 · Hashtag真实帖子抓取+AI摘要fallback</p>\n'
+    html += '<p>☁️ 法考云端监控 v3.1 · 每日8:30 · 跨天缓存Q&A完整配对</p>\n'
     html += '</div>\n'
     html += '</body></html>'
 
@@ -949,7 +1110,12 @@ def main():
     success_count = 0
     real_post_count = 0
     alt_count = 0
+    complete_count = 0  # Q&A完整配对数
     api_calls = 0
+
+    # 加载跨天题目缓存
+    question_cache = load_question_cache()
+    print(f"📦 题目缓存: {len(question_cache)} 条（跨天配对用）\n")
 
     for subject, slot in TEACHER_SLOTS.items():
         if not check_api_ok():
@@ -966,12 +1132,18 @@ def main():
         print(f"   📡 一级抓取: hashtag='{hashtag_query}' filter='{teacher_filter}'...")
 
         try:
-            # ============ 一级：真实帖子抓取 ============
-            result = fetch_teacher_posts(hashtag_query, teacher_filter, token)
+            # ============ 一级：真实帖子抓取（含跨天缓存配对） ============
+            result = fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache)
             api_calls += 1  # 搜索调用
 
             if result:
-                q_text, a_text, q_link, a_link, source_label = result
+                q_text = result["question_text"]
+                a_text = result["answer_text"]
+                q_link = result.get("question_link", "")
+                a_link = result.get("answer_link", "")
+                source_label = result["source_label"]
+                is_complete = result.get("is_complete", False)
+
                 q_html = format_question_html(q_text)
                 a_html = format_answer_html(a_text)
 
@@ -984,10 +1156,13 @@ def main():
                     "answer_link": a_link,
                     "is_alternative": False,
                     "is_real_post": True,
+                    "is_complete": is_complete,
                     "error": False,
                 }
                 success_count += 1
                 real_post_count += 1
+                if is_complete:
+                    complete_count += 1
                 content_len = len(q_text) + len(a_text)
                 print(f"   ✅ 真实帖子命中: {source_label} ({content_len} 字符)")
             else:
@@ -1007,6 +1182,7 @@ def main():
                         "answer_link": "",
                         "is_alternative": is_alt,
                         "is_real_post": False,
+                        "is_complete": False,
                         "error": False,
                     }
                     success_count += 1
@@ -1024,6 +1200,7 @@ def main():
                         "answer_link": "",
                         "is_alternative": False,
                         "is_real_post": False,
+                        "is_complete": False,
                         "error": False,
                     }
                     print(f"   ⚪ 一级二级均未命中")
@@ -1039,6 +1216,7 @@ def main():
                 "answer_link": "",
                 "is_alternative": False,
                 "is_real_post": False,
+                "is_complete": False,
                 "error": str(e),
             }
 
@@ -1047,6 +1225,7 @@ def main():
     print(f"\n{'='*60}")
     print(f"📊 结果: {success_count}/{total_slots} 科目获取成功")
     print(f"   📡 真实帖子: {real_post_count}")
+    print(f"   🔗 Q&A完整配对: {complete_count}")
     if alt_count > 0:
         print(f"   🔄 替代名师: {alt_count}")
     print(f"   🔢 API调用: {API_CALL_COUNT}/100 (小时限额)")
@@ -1060,9 +1239,11 @@ def main():
     html = build_html_report(slot_results)
 
     today_mmdd = datetime.now(tz).strftime("%m/%d")
-    subject = f"【法考每日一题】{today_mmdd} | v3.0真实帖 | {success_count}/{total_slots}已获取"
+    subject = f"【法考每日一题】{today_mmdd} | v3.1缓存配对 | {success_count}/{total_slots}已获取"
+    if complete_count > 0:
+        subject += f"({complete_count}完整Q&A)"
     if real_post_count > 0:
-        subject += f"({real_post_count}真实帖)"
+        subject += f" · {real_post_count}真实帖"
 
     if send_email(subject, html):
         print(f"\n✅ 任务完成! 邮件已发送至 {QQ_EMAIL}")
