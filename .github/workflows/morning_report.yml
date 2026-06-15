@@ -6,6 +6,9 @@ on:
     - cron: "30 0 * * *"
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: write
+
 jobs:
   morning-report:
     runs-on: ubuntu-latest
@@ -20,7 +23,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run morning report
+      - name: Run daily question monitor（每日一题追踪）
+        env:
+          QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
+        run: python daily_question_monitor.py
+
+      - name: Run morning report（B站动态+法考热点）
         env:
           QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
         run: python morning_report.py
+
+      - name: Commit state update
+        run: |
+          git config user.name "Fakao Bot"
+          git config user.email "bot@fakao-monitor.local"
+          git add state_daily_questions.json
+          git diff --cached --quiet || git commit -m "chore: update daily question state [skip ci]"
+          git push
