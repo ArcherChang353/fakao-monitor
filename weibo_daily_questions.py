@@ -1052,6 +1052,11 @@ def main():
     print(f"   🔢 API调用: {API_CALL_COUNT}/100 (小时限额)")
 
     # 构建并发送报告
+    if success_count == 0:
+        print(f"\n⚠️ 所有科目均获取失败，跳过邮件发送（避免空报告）")
+        print(f"   下次运行: 明日 8:30 CST (API限额将重置)")
+        return
+
     html = build_html_report(slot_results)
 
     today_mmdd = datetime.now(tz).strftime("%m/%d")
