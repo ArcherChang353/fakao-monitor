@@ -1,4 +1,4 @@
-name: 法考每日资讯（8:30）
+name: 法考每日一题（微博智搜版）（8:30）
 
 on:
   schedule:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  morning-report:
+  daily-questions:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,20 +23,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run daily question monitor（每日一题追踪）
+      - name: Run Weibo daily questions（微博智搜·每日一题）
         env:
           QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
-        run: python daily_question_monitor.py
+          WEIBO_APP_ID: ${{ secrets.WEIBO_APP_ID }}
+          WEIBO_APP_SECRET: ${{ secrets.WEIBO_APP_SECRET }}
+        run: python weibo_daily_questions.py
 
-      - name: Run morning report（B站动态+法考热点）
-        env:
-          QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
-        run: python morning_report.py
-
-      - name: Commit state update
+      - name: Commit cache update
         run: |
           git config user.name "Fakao Bot"
           git config user.email "bot@fakao-monitor.local"
-          git add state_daily_questions.json
-          git diff --cached --quiet || git commit -m "chore: update daily question state [skip ci]"
+          git add weibo_search_cache.json
+          git diff --cached --quiet || git commit -m "chore: update weibo cache [skip ci]"
           git push
