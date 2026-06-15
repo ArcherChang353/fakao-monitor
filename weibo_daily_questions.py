@@ -133,9 +133,9 @@ MAX_POSTS_TO_FETCH = 12  # 每个hashtag搜索最多抓取的帖子数
 
 # ============ 微博API ============
 
-def get_weibo_token():
+def get_weibo_token(force_refresh=False):
     """获取微博API访问令牌（缓存避免重复请求）"""
-    if os.path.exists(CACHE_FILE):
+    if not force_refresh and os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r") as f:
                 cache = json.load(f)
@@ -180,12 +180,22 @@ def get_weibo_token():
 
 
 def search_zhisou(query, token):
-    """调用微博智搜API，返回原始数据（含wbCustomBlock引用）"""
+    """调用微博智搜API，返回原始数据。遇频率限制自动刷新token"""
     url = f"{SEARCH_ENDPOINT}?query={urllib.parse.quote(query)}&token={token}"
 
     try:
         resp = urllib.request.urlopen(url, timeout=30)
         data = json.loads(resp.read())
+        if data.get("code") == 42900:
+            # 频率限制：尝试刷新token
+            print(f"      ⚠️ Token频率限制，尝试刷新...")
+            try:
+                new_token = get_weibo_token(force_refresh=True)
+                if new_token and new_token != token:
+                    return search_zhisou(query, new_token)
+            except Exception:
+                pass
+            return None
         if data.get("code") != 0:
             return None
 
@@ -256,6 +266,13 @@ def fetch_status(mblogid, token, post_cache=None):
         elif result.get("code") == 42900:
             print(f"      ⚠️ API频率限制，等待30秒...")
             time.sleep(30)
+            # 尝试刷新token
+            try:
+                new_token = get_weibo_token(force_refresh=True)
+                if new_token:
+                    return fetch_status(mblogid, new_token, post_cache)
+            except Exception:
+                pass
             return fetch_status(mblogid, token, post_cache)
         return None
     except Exception as e:
