@@ -130,7 +130,8 @@ QUESTION_CACHE_FILE = "weibo_question_cache.json"  # 缓存每日题目帖（跨
 # API频率限制: 100次/小时
 API_DELAY = 0.6
 MAX_POSTS_TO_FETCH = 6  # 每个老师最多抓取的帖子数（8老师×6=48次，+搜索16次=64次<100限额）
-MAX_DEEP_POSTS = 12  # 当答案找不到匹配题目时，翻更深查找
+MAX_DEEP_POSTS = 30  # 当答案找不到匹配题目时，翻更深查找
+MAX_FULL_SCAN = 80   # 缓存为空时全量扫描上限（一次性回溯填充历史题目）
 API_CALL_COUNT = 0  # 全局API调用计数器
 API_LIMIT = 90  # 接近100前停止
 
@@ -552,6 +553,48 @@ def try_extract_question_from_post(post_data):
     return (text, False)
 
 
+# ============ 从答案帖提取题目（fallback） ============
+
+def try_extract_question_from_answer(answer_text):
+    """
+    从答案帖/视频帖的文本中尝试提取题目描述。
+    很多老师的答案帖（尤其是视频形式）会在正文中复述题目。
+    
+    返回: 提取的题目文本，或空字符串
+    """
+    if not answer_text or len(answer_text) < 20:
+        return ""
+    
+    # 方式1: 匹配常见题目标记段落
+    for pattern in [
+        r'【题目】(.*?)(?:【|$)',      # 【题目】xxx【解析】
+        r'题目[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 题目：xxx
+        r'题干[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 题干：xxx
+        r'案例[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 案例：xxx
+    ]:
+        m = re.search(pattern, answer_text, re.DOTALL)
+        if m:
+            extracted = m.group(1).strip()
+            if len(extracted) > 15:
+                return extracted[:500]  # 限长
+    
+    # 方式2: 找到"解析"关键词，往前寻找题目描述
+    idx_analysis = answer_text.find('解析')
+    if idx_analysis > 30:
+        prefix = answer_text[:idx_analysis].strip()
+        # 去掉一些无关前缀
+        for tag in ['#', '@', '李佳', '行政法', '每日一题']:
+            if tag in prefix[:50]:
+                # 尝试找到真正的题目开头
+                lines = prefix.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if len(line) > 20 and not line.startswith('#') and not line.startswith('@'):
+                        return line[:500]
+    
+    return ""
+
+
 # ============ 两阶段抓取 ============
 
 def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=None):
@@ -672,7 +715,8 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     # 查找匹配题目：优先缓存，其次当天帖子
     question_text = ""
     question_link = ""
-    q_source = ""  # "cache" | "current" | "deep" | ""(not found)
+    q_source = ""  # "cache" | "current" | "deep" | "fullscan" | "answer_extract" | ""(not found)
+    deep_n = min(MAX_DEEP_POSTS, len(mblogids))  # 预计算深度搜索范围
     
     if a_num is not None:
         # 🔥 关键：先查题目缓存（昨天的题目）
@@ -695,9 +739,9 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                 q_source = "current"
                 print(f"      📄 当天命中: Q{a_num}题目")
 
-        # 还是没有 → 尝试更深搜索
+        # 还是没有 → 更深搜索 + 必要时全量回溯
         if not question_text and len(mblogids) > fetch_n and check_api_ok():
-            deep_n = min(MAX_DEEP_POSTS, len(mblogids))
+            # 先翻到 MAX_DEEP_POSTS
             print(f"      🔍 缓存未命中，深度搜索({fetch_n+1}~{deep_n})找Q{a_num}题目...")
             for mid in mblogids[fetch_n:deep_n]:
                 if not check_api_ok():
@@ -711,15 +755,62 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                     question_text = q_extracted
                     question_link = f"https://weibo.com/detail/{mid}"
                     q_source = "deep"
-                    print(f"      🎯 深度命中: Q{a_num}题目（翻到第{deep_n}页）")
+                    print(f"      🎯 深度命中: Q{a_num}题目")
+                    # 存入缓存
+                    created = post.get("created_at", "")
+                    user = post.get("user", {}).get("screen_name", "")
+                    store_question_in_cache(teacher_filter, a_num, q_extracted, question_link, created, user, question_cache)
                     break
-                time.sleep(API_DELAY / 2)  # 深度搜索减半延迟
+                time.sleep(API_DELAY / 2)
+
+        # 🔥 缓存为空 + 深度搜索也找不到 → 全量回溯扫描（一次性）
+        if not question_text and len(mblogids) > deep_n and check_api_ok():
+            full_n = min(MAX_FULL_SCAN, len(mblogids))
+            print(f"      🔥 全量回溯({deep_n}~{full_n})填充题目缓存...")
+            found_count = 0
+            for mid in mblogids[deep_n:full_n]:
+                if not check_api_ok():
+                    break
+                post = fetch_status(mid, token, post_cache)
+                if not post:
+                    continue
+                ptype, pq_num, pthird = classify_post(post, teacher_filter)
+                if ptype == "question" and pq_num is not None and not find_question_in_cache(teacher_filter, pq_num, question_cache):
+                    q_extracted, _ = try_extract_question_from_post(post)
+                    created = post.get("created_at", "")
+                    user = post.get("user", {}).get("screen_name", "")
+                    weibo_link = f"https://weibo.com/detail/{mid}"
+                    store_question_in_cache(teacher_filter, pq_num, q_extracted, weibo_link, created, user, question_cache)
+                    found_count += 1
+                    # 检查是否命中了正在找的题号
+                    if pq_num == a_num and not question_text:
+                        question_text = q_extracted
+                        question_link = weibo_link
+                        q_source = "fullscan"
+                if ptype == "answer" and found_count >= 5:
+                    break  # 找到5个题目帖就停，省API
+                time.sleep(API_DELAY / 3)
+            if found_count > 0:
+                print(f"      📦 全量回溯填充 {found_count} 条题目到缓存")
+            if q_source == "fullscan":
+                print(f"      🎯 全量命中: Q{a_num}题目")
 
     # 处理答案帖太短的情况（视频解析）
     if len(a_text.strip()) < 30:
         a_text = f"📹 本题解析为视频形式，请点击下方链接查看完整讲解"
 
-    # 如果题目仍未找到，给出提示
+    # 如果题目仍未找到，尝试从答案帖本身提取题目描述
+    if not question_text:
+        extracted_q = try_extract_question_from_answer(a_text)
+        if extracted_q:
+            question_text = extracted_q
+            q_source = "answer_extract"
+            print(f"      📝 从答案帖提取题目 ({len(extracted_q)}字)")
+            # 存入缓存供后续使用
+            if a_num is not None:
+                store_question_in_cache(teacher_filter, a_num, extracted_q, answer_link, a_created, a_user, question_cache)
+    
+    # 最后的兜底
     if not question_text:
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
         question_link = ""
@@ -941,7 +1032,7 @@ strong.num {{ color:#2980b9; font-weight:600; }}
     <div class="header">
   <h1>📝 法考每日一题</h1>
   <div class="date">{today} {weekday}</div>
-  <div class="sub">v3.1 · 跨天缓存配对 · 题目+答案完整呈现</div>
+  <div class="sub">v3.2 · 全量回溯缓存 · 智能题目提取 · Q&A完整呈现</div>
 </div>
 """
     success_count = 0
@@ -1061,7 +1152,7 @@ strong.num {{ color:#2980b9; font-weight:600; }}
     html += ' · 自动生成于 GitHub Actions</div>\n'
 
     html += '<div class="footer">\n'
-    html += '<p>☁️ 法考云端监控 v3.1 · 每日8:30 · 跨天缓存Q&A完整配对</p>\n'
+    html += '<p>☁️ 法考云端监控 v3.2 · 每日8:30 · 全量回溯缓存智能Q&A配对</p>\n'
     html += '</div>\n'
     html += '</body></html>'
 
@@ -1239,7 +1330,7 @@ def main():
     html = build_html_report(slot_results)
 
     today_mmdd = datetime.now(tz).strftime("%m/%d")
-    subject = f"【法考每日一题】{today_mmdd} | v3.1缓存配对 | {success_count}/{total_slots}已获取"
+    subject = f"【法考每日一题】{today_mmdd} | v3.2全量回溯 | {success_count}/{total_slots}已获取"
     if complete_count > 0:
         subject += f"({complete_count}完整Q&A)"
     if real_post_count > 0:
