@@ -39,6 +39,7 @@ jobs:
         run: |
           git config user.name "Fakao Bot"
           git config user.email "bot@fakao-monitor.local"
-          git add weibo_search_cache.json weibo_post_cache.json
+          git add weibo_search_cache.json
+          git add weibo_post_cache.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: update weibo caches [skip ci]"
           git push

@@ -128,7 +128,22 @@ POST_CACHE_FILE = "weibo_post_cache.json"  # 缓存已抓取的帖子内容（24
 
 # API频率限制: 100次/小时
 API_DELAY = 0.6
-MAX_POSTS_TO_FETCH = 12  # 每个hashtag搜索最多抓取的帖子数
+MAX_POSTS_TO_FETCH = 6  # 每个老师最多抓取的帖子数（8老师×6=48次，+搜索16次=64次<100限额）
+API_CALL_COUNT = 0  # 全局API调用计数器
+API_LIMIT = 90  # 接近100前停止
+
+
+def track_api_call():
+    """追踪API调用次数，达到上限时抛出异常"""
+    global API_CALL_COUNT
+    API_CALL_COUNT += 1
+    if API_CALL_COUNT >= API_LIMIT:
+        raise Exception(f"API调用已达上限 {API_LIMIT}/{API_CALL_COUNT}")
+
+
+def check_api_ok():
+    """检查是否还能调用API"""
+    return API_CALL_COUNT < API_LIMIT
 
 
 # ============ 微博API ============
@@ -186,26 +201,38 @@ def search_zhisou(query, token):
     try:
         resp = urllib.request.urlopen(url, timeout=30)
         data = json.loads(resp.read())
-        if data.get("code") == 42900:
-            # 频率限制：尝试刷新token
+        track_api_call()
+        code = data.get("code")
+
+        if code == 42900:
             print(f"      ⚠️ Token频率限制，尝试刷新...")
             try:
                 new_token = get_weibo_token(force_refresh=True)
                 if new_token and new_token != token:
                     return search_zhisou(query, new_token)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"      ❌ Token刷新失败: {e}")
             return None
-        if data.get("code") != 0:
+
+        if code != 0:
+            msg = data.get("message", "")
+            print(f"      ❌ 智搜API错误 code={code} msg={msg[:80]}")
             return None
 
         result = data.get("data", {})
-        if result.get("noContent") or not result.get("completed"):
+        if result.get("noContent"):
+            print(f"      ⚪ 智搜返回 noContent=True (无相关内容)")
+            return None
+        if not result.get("completed"):
+            print(f"      ⏳ 智搜返回 completed=False (分析未完成)")
             return None
 
         return result
+    except urllib.error.HTTPError as e:
+        print(f"      ❌ 智搜HTTP {e.code}: {e.reason}")
+        return None
     except Exception as e:
-        print(f"      搜索异常: {e}")
+        print(f"      ❌ 搜索异常: {e}")
         return None
 
 
@@ -257,6 +284,7 @@ def fetch_status(mblogid, token, post_cache=None):
     try:
         resp = urllib.request.urlopen(url, timeout=15)
         result = json.loads(resp.read())
+        track_api_call()
         if result.get("code") == 0:
             data = result.get("data", {})
             # 写入缓存
@@ -482,12 +510,13 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
         return None
 
     # 如果有fallback查询（teacher名+每日一题），也搜索一次合并mblogid
-    fallback_query = f"{teacher_filter} 每日一题"
-    fb_data = search_zhisou(fallback_query, token)
-    if fb_data:
-        fb_ids = extract_mblogids(fb_data)
-        mblogids = sorted(set(mblogids + fb_ids), reverse=True)
-        print(f"      hashtag搜索: {len(set(mblogids))} 个唯一引用帖（含fallback合并）")
+    if check_api_ok():
+        fallback_query = f"{teacher_filter} 每日一题"
+        fb_data = search_zhisou(fallback_query, token)
+        if fb_data:
+            fb_ids = extract_mblogids(fb_data)
+            mblogids = sorted(set(mblogids + fb_ids), reverse=True)
+            print(f"      hashtag搜索: {len(set(mblogids))} 个唯一引用帖（含fallback合并）")
 
     fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
     print(f"      检查最近 {fetch_n} 个帖子...")
@@ -500,6 +529,10 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token):
     answers = []    # (mblogid, q_num, text, created_at, user, is_third)
 
     for mid in mblogids[:fetch_n]:
+        if not check_api_ok():
+            print(f"      ⚠️ API调用接近上限({API_CALL_COUNT}/{API_LIMIT})，停止抓取")
+            break
+
         post = fetch_status(mid, token, post_cache)
         if not post:
             continue
@@ -883,9 +916,22 @@ def main():
 
     # 获取token
     print("🔑 获取微博API Token...")
+
+    # GitHub Actions环境: 强制刷新token避免本地缓存被限流
+    is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+
     try:
-        token = get_weibo_token()
-        print(f"   ✅ Token已就绪 (前8位: {token[:8]}...)\n")
+        if is_github_actions:
+            try:
+                token = get_weibo_token(force_refresh=True)
+                print(f"   ✅ GitHub环境，已刷新Token (前8位: {token[:8]}...)\n")
+            except Exception as e:
+                print(f"   ⚠️ 刷新失败({e})，回退缓存...")
+                token = get_weibo_token()
+                print(f"   ✅ 缓存Token已就绪 (前8位: {token[:8]}...)\n")
+        else:
+            token = get_weibo_token()
+            print(f"   ✅ Token已就绪 (前8位: {token[:8]}...)\n")
     except Exception as e:
         print(f"   ❌ Token获取失败: {e}")
         fallback_html = f"""<html><body>
@@ -906,6 +952,10 @@ def main():
     api_calls = 0
 
     for subject, slot in TEACHER_SLOTS.items():
+        if not check_api_ok():
+            print(f"\n⚠️ API调用已达上限 ({API_CALL_COUNT}/{API_LIMIT})，停止后续抓取")
+            break
+
         display = slot["display_name"]
         color = slot["color"]
         hashtag_query = slot["hashtag_query"]
@@ -999,7 +1049,7 @@ def main():
     print(f"   📡 真实帖子: {real_post_count}")
     if alt_count > 0:
         print(f"   🔄 替代名师: {alt_count}")
-    print(f"   🔢 API调用: ~{api_calls}/100 (小时限额)")
+    print(f"   🔢 API调用: {API_CALL_COUNT}/100 (小时限额)")
 
     # 构建并发送报告
     html = build_html_report(slot_results)
