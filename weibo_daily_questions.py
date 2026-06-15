@@ -129,8 +129,8 @@ QUESTION_CACHE_FILE = "weibo_question_cache.json"  # 缓存每日题目帖（跨
 
 # API频率限制: 100次/小时
 API_DELAY = 0.6
-MAX_POSTS_TO_FETCH = 6  # 每个老师最多抓取的帖子数（8老师×6=48次，+搜索16次=64次<100限额）
-MAX_DEEP_POSTS = 24  # 深度搜索：答案找不到匹配题目时翻更深
+MAX_POSTS_TO_FETCH = 4  # 每个老师初始帖子数（4×8=32次，+搜索16次=48次，留42次给深度搜索）
+MAX_DEEP_POSTS = 12  # 深度搜索：答案找不到匹配题目时翻更深（谨慎使用，避免API配额）
 API_CALL_COUNT = 0  # 全局API调用计数器
 API_LIMIT = 90  # 接近100前停止
 
@@ -333,11 +333,16 @@ def store_question_in_cache(teacher_filter, q_num, text, weibo_link, created_at,
     }
 
 
-def fetch_status(mblogid, token, post_cache=None):
-    """通过status_show API获取单条微博完整内容（支持缓存）"""
+def fetch_status(mblogid, token, post_cache=None, _retry=0):
+    """通过status_show API获取单条微博完整内容（支持缓存，最多重试2次）"""
+    MAX_RETRY = 2
+    
     # 先查缓存
     if post_cache and mblogid in post_cache:
         return post_cache[mblogid]
+
+    if not check_api_ok():
+        return None
 
     url = f"{STATUS_API}?token={token}&id={mblogid}"
     try:
@@ -351,16 +356,20 @@ def fetch_status(mblogid, token, post_cache=None):
                 post_cache[mblogid] = data
             return data
         elif result.get("code") == 42900:
-            print(f"      ⚠️ API频率限制，等待30秒...")
-            time.sleep(30)
+            if _retry >= MAX_RETRY:
+                print(f"      ⚠️ 频率限制，已达最大重试次数({MAX_RETRY})，放弃 {mblogid}")
+                return None
+            wait = 15 * (_retry + 1)
+            print(f"      ⚠️ API频率限制，等待{wait}s后重试({_retry+1}/{MAX_RETRY})...")
+            time.sleep(wait)
             # 尝试刷新token
             try:
                 new_token = get_weibo_token(force_refresh=True)
-                if new_token:
-                    return fetch_status(mblogid, new_token, post_cache)
+                if new_token and new_token != token:
+                    return fetch_status(mblogid, new_token, post_cache, _retry + 1)
             except Exception:
                 pass
-            return fetch_status(mblogid, token, post_cache)
+            return None  # 刷新失败 = 放弃，不再无限重试
         return None
     except Exception as e:
         print(f"      status_show异常 ({mblogid}): {e}")
@@ -557,39 +566,49 @@ def try_extract_question_from_post(post_data):
 def try_extract_question_from_answer(answer_text):
     """
     从答案帖/视频帖的文本中尝试提取题目描述。
-    很多老师的答案帖（尤其是视频形式）会在正文中复述题目。
-    
+    策略：题目标记→解析前文案→分段首段→整体裁剪。
     返回: 提取的题目文本，或空字符串
     """
-    if not answer_text or len(answer_text) < 20:
+    if not answer_text or len(answer_text) < 15:
         return ""
     
     # 方式1: 匹配常见题目标记段落
     for pattern in [
-        r'【题目】(.*?)(?:【|$)',      # 【题目】xxx【解析】
-        r'题目[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 题目：xxx
-        r'题干[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 题干：xxx
-        r'案例[：:]\s*(.*?)(?:\n|解析|答案|【|$)',  # 案例：xxx
+        r'【题目】(.*?)(?:【|$)', r'【题干】(.*?)(?:【|$)',
+        r'题目[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)', 
+        r'题干[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
+        r'案例[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
+        r'原题[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
     ]:
         m = re.search(pattern, answer_text, re.DOTALL)
         if m:
             extracted = m.group(1).strip()
             if len(extracted) > 15:
-                return extracted[:500]  # 限长
-    
-    # 方式2: 找到"解析"关键词，往前寻找题目描述
+                return extracted[:500]
+
+    # 方式2: 找"解析"关键词，往前取题目
     idx_analysis = answer_text.find('解析')
     if idx_analysis > 30:
         prefix = answer_text[:idx_analysis].strip()
-        # 去掉一些无关前缀
-        for tag in ['#', '@', '李佳', '行政法', '每日一题']:
-            if tag in prefix[:50]:
-                # 尝试找到真正的题目开头
-                lines = prefix.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if len(line) > 20 and not line.startswith('#') and not line.startswith('@'):
-                        return line[:500]
+        # 分行处理，取最长的非标签行
+        lines = prefix.split('\n')
+        best_line = ""
+        for line in lines:
+            line = line.strip()
+            if len(line) > 20 and not line.startswith('#') and not line.startswith('@'):
+                if len(line) > len(best_line):
+                    best_line = line
+        if best_line:
+            return best_line[:500]
+    
+    # 方式3: 去掉标签后的第一段有意义文本
+    cleaned = re.sub(r'#\S+#\s*', '', answer_text)
+    cleaned = re.sub(r'@\S+\s*', '', cleaned)
+    cleaned = re.sub(r'http\S+', '', cleaned)
+    cleaned = cleaned.strip()
+    if len(cleaned) > 20:
+        # 取前200字作为题目描述
+        return cleaned[:300] + ("..." if len(cleaned) > 300 else "")
     
     return ""
 
