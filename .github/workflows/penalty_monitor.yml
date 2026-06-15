@@ -1,0 +1,26 @@
+name: 处罚监控（11:00）
+
+on:
+  schedule:
+    # 北京时间 11:00 = UTC 3:00
+    - cron: "0 3 * * *"
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  penalty-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run penalty monitor
+        env:
+          QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
+        run: python penalty_monitor.py
