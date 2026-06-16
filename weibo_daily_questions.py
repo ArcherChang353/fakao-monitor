@@ -729,6 +729,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     # 逻辑：今天的答案A_N → 题目Q_N在昨天，应从缓存中找
     best_answer = all_answers[0]
     a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
+    answer_link = f"https://weibo.com/detail/{a_mid}"
     
     # 查找匹配题目：优先缓存，其次当天帖子
     question_text = ""
@@ -809,7 +810,6 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
         question_link = ""
 
-    answer_link = f"https://weibo.com/detail/{a_mid}"
     
     # 构建来源标注
     if a_num:
