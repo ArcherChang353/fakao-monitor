@@ -46,7 +46,7 @@ TEACHER_SLOTS = {
     "行政法": {
         "display_name": "李佳（行政法）",
         "color": "#e74c3c",
-        "hashtag_query": "李佳每日一题",
+        "hashtag_query": "佳佳每日一题",
         "teacher_filter": "行政法李佳",
         "fallback_queries": [
             {"name": "李佳", "label": "李佳（行政法）", "query": "行政法李佳 每日一题"},
@@ -651,7 +651,15 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
         if fb_data:
             fb_ids = extract_mblogids(fb_data)
             mblogids = sorted(set(mblogids + fb_ids), reverse=True)
-            print(f"      hashtag搜索: {len(set(mblogids))} 个唯一引用帖（含fallback合并）")
+            print(f"      hashtag+fallback合并: {len(set(mblogids))} 个唯一引用帖")
+
+    # 🔥 第三层fallback：裸搜老师名字（有些老师不用"每日一题"关键词）
+    if check_api_ok():
+        bare_data = search_zhisou(teacher_filter, token)
+        if bare_data:
+            bare_ids = extract_mblogids(bare_data)
+            mblogids = sorted(set(mblogids + bare_ids), reverse=True)
+            print(f"      裸搜'{teacher_filter}'合并: {len(set(mblogids))} 个唯一引用帖")
 
     fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
     print(f"      检查最近 {fetch_n} 个帖子...")
