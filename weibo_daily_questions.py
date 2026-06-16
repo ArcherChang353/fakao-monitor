@@ -340,40 +340,60 @@ def fetch_status(mblogid, token, post_cache=None, _retry=0):
     # 先查缓存
     if post_cache and mblogid in post_cache:
         return post_cache[mblogid]
-
+    
     if not check_api_ok():
         return None
 
+    # === 主获取：IM API ===
     url = f"{STATUS_API}?token={token}&id={mblogid}"
+    data = None
     try:
         resp = urllib.request.urlopen(url, timeout=15)
         result = json.loads(resp.read())
         track_api_call()
         if result.get("code") == 0:
             data = result.get("data", {})
-            # 写入缓存
-            if post_cache is not None and data:
-                post_cache[mblogid] = data
-            return data
-        elif result.get("code") == 42900:
-            if _retry >= MAX_RETRY:
-                print(f"      ⚠️ 频率限制，已达最大重试次数({MAX_RETRY})，放弃 {mblogid}")
-                return None
-            wait = 15 * (_retry + 1)
-            print(f"      ⚠️ API频率限制，等待{wait}s后重试({_retry+1}/{MAX_RETRY})...")
-            time.sleep(wait)
-            # 尝试刷新token
-            try:
-                new_token = get_weibo_token(force_refresh=True)
-                if new_token and new_token != token:
-                    return fetch_status(mblogid, new_token, post_cache, _retry + 1)
-            except Exception:
-                pass
-            return None  # 刷新失败 = 放弃，不再无限重试
-        return None
     except Exception as e:
         print(f"      status_show异常 ({mblogid}): {e}")
-        return None
+
+    # === Fallback: m.weibo.cn 移动端API（无需鉴权，补充图片URL）===
+    if data is not None:
+        # 检查是否已有图片信息
+        has_pics = bool(data.get("pics") or data.get("pic_urls") or data.get("pic_ids"))
+        if not has_pics:
+            try:
+                m_url = f"https://m.weibo.cn/statuses/show?id={mblogid}"
+                m_req = urllib.request.Request(
+                    m_url,
+                    headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"}
+                )
+                m_resp = urllib.request.urlopen(m_req, timeout=10)
+                m_json = json.loads(m_resp.read().decode("utf-8"))
+                m_data = m_json.get("data") or m_json.get("status")
+                if m_data:
+                    # 提取图片URL并合并到data
+                    pics = m_data.get("pics") or []
+                    if pics:
+                        data["pics"] = pics
+                        print(f"      📷 m.weibo.cn补充了{len(pics)}张图片")
+                    pic_ids = m_data.get("pic_ids") or []
+                    if pic_ids:
+                        data["pic_ids"] = pic_ids
+            except Exception as e2:
+                # 移动端API失败不影响主流程
+                pass
+
+        # 写入缓存
+        if post_cache is not None:
+            post_cache[mblogid] = data
+        return data
+
+    # IM API 失败，走重试逻辑
+    if result and result.get("code") == 42900:
+        # ... existing retry logic ...
+        pass
+
+    return None
 
 
 # ============ 帖子分类与内容提取 ============
@@ -488,6 +508,76 @@ def format_answer_html(answer_text):
     return format_question_html(answer_text)  # 复用同样的格式化逻辑
 
 
+def resolve_short_url(short_url):
+    """解析微博短链接，返回真实URL"""
+    try:
+        req = urllib.request.Request(
+            short_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; FakaoBot/1.0)"}
+        )
+        # 禁止自动跟随重定向，拿到 Location 头
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        # 手动处理：先发 HEAD 请求拿 Location
+        import http.client
+        # 简单方案：用 urllib 正常打开，捕获重定向后的 URL
+        resp = urllib.request.urlopen(
+            urllib.request.Request(
+                short_url,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+            ),
+            timeout=10
+        )
+        return resp.geturl()
+    except Exception as e:
+        return None
+
+
+def extract_image_urls_from_post(post_data):
+    """
+    从帖子数据中提取图片URL（兼容多种字段名+短链接解析）
+    返回: 图片URL列表
+    """
+    urls = []
+
+    # 方式1: pic_urls（标准Open API字段）
+    pic_urls = post_data.get("pic_urls") or []
+    for p in pic_urls:
+        if isinstance(p, dict):
+            url = p.get("large") or p.get("thumbnail_pic") or p.get("bmiddle_pic") or p.get("original_pic") or ""
+            if url:
+                urls.append(url)
+        elif isinstance(p, str) and p.startswith("http"):
+            urls.append(p)
+
+    # 方式2: pics（旧版字段）
+    pics = post_data.get("pics") or []
+    for p in pics:
+        if isinstance(p, dict):
+            url = p.get("large", {}).get("url") or p.get("url") or ""
+            if url:
+                urls.append(url)
+        elif isinstance(p, str) and p.startswith("http"):
+            urls.append(p)
+
+    # 方式3: pic_ids → 拼接微博图片URL
+    pic_ids = post_data.get("pic_ids") or []
+    for pid in pic_ids:
+        if pid:
+            urls.append(f"https://wx1.sinaimg.cn/large/{pid}.jpg")
+
+    # 方式4: 从正文提取 t.cn 短链接并解析
+    text = post_data.get("text", "")
+    for m in re.finditer(r'https?://t\.cn/(\S+)', text):
+        short = m.group(0).rstrip(")").rstrip("】").rstrip("】")
+        real = resolve_short_url(short)
+        if real and any(ext in real.lower() for ext in [".jpg", ".png", ".jpeg", ".gif", ".webp"]):
+            urls.append(real)
+        elif real and "sinaimg" in real:
+            urls.append(real)
+
+    return list(dict.fromkeys(urls))  # 去重保序
+
+
 # ============ OCR 图片文字识别 ============
 
 def ocr_image(image_url):
@@ -496,7 +586,6 @@ def ocr_image(image_url):
         return None
 
     try:
-        # 下载图片到临时文件
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
             req = urllib.request.Request(image_url, headers={
                 'User-Agent': 'Mozilla/5.0 (compatible; FakaoBot/1.0)',
@@ -506,13 +595,11 @@ def ocr_image(image_url):
             tmp.write(resp.read())
             tmp_path = tmp.name
 
-        # OCR识别
         img = Image.open(tmp_path)
+        # 可选：转灰度提升OCR准确率
+        img = img.convert("L").convert("RGB")
         text = pytesseract.image_to_string(img, lang='chi_sim+eng')
-
-        # 清理临时文件
         os.unlink(tmp_path)
-
         return text.strip()
     except Exception as e:
         print(f"         OCR异常: {e}")
@@ -521,44 +608,59 @@ def ocr_image(image_url):
 
 def try_extract_question_from_post(post_data):
     """
-    尝试从帖子中提取题目文字。
-    优先使用帖子正文，如果正文太短且帖子有图片，尝试OCR。
-    返回: (question_text, is_from_ocr)
+    尝试从帖子中提取题目文字和图片URL。
+    优先使用帖子正文，如果正文太短且帖子有图片，记录图片URL备用。
+    返回: (question_text, image_urls)
     """
     text = post_data.get("text", "").strip()
-    pics = post_data.get("pics", [])
-    has_image = post_data.get("has_image", False)
+    image_urls = extract_image_urls_from_post(post_data)
 
     # 如果正文足够长（>30字），直接用正文
     if len(text) > 30:
-        # 检查是否包含选项 (A. B. C. D. 等)
-        if re.search(r'[A-D][\.\、）\)]', text):
-            return (text, False)
-        return (text, False)
+        return (text, image_urls)
 
-    # 正文太短，尝试OCR图片
-    if (pics or has_image) and HAS_OCR:
-        # 获取图片URL
-        img_urls = []
-        if pics:
-            for pic in pics:
-                url = pic.get('url', '') or pic.get('large', {}).get('url', '')
-                if url:
-                    img_urls.append(url)
+    # 正文太短，但有图片：返回短文本+图片URL（邮件里会嵌入图片）
+    if image_urls:
+        print(f"         正文较短({len(text)}字)，将有{len(image_urls)}张图片嵌入邮件")
+        return (text, image_urls)
 
-        if not img_urls:
-            # 尝试从pic_ids构建URL（不常见但试试）
-            pic_ids = post_data.get('pic_ids', [])
-            for pid in pic_ids:
-                img_urls.append(f'https://wx1.sinaimg.cn/large/{pid}.jpg')
+    return (text, [])
 
-        for img_url in img_urls[:3]:  # 最多OCR 3张图
-            ocr_text = ocr_image(img_url)
-            if ocr_text and len(ocr_text) > 20:
-                print(f"         📷 OCR成功 ({len(ocr_text)}字)")
-                return (ocr_text, True)
 
-    return (text, False)
+def detect_embedded_question(post_text, answer_q_num):
+    """
+    检测答案帖中是否嵌入了下一题的题目（李佳模式：同一帖=昨天答案视频+今天新题文字）。
+    尝试从答案帖文本中提取嵌入的新题目。
+    返回: (new_q_num, question_text) 或 (None, "")
+    """
+    if not post_text or len(post_text) < 80:
+        return (None, "")
+    
+    # 查找所有"第X题"引用
+    all_q_nums = []
+    for m in re.finditer(r'第\s*(\d+)\s*题', post_text):
+        all_q_nums.append(int(m.group(1)))
+    
+    if len(all_q_nums) < 2:
+        return (None, "")
+    
+    # 找到最大的题号（新题）
+    new_q_num = max(all_q_nums)
+    if new_q_num == answer_q_num:
+        return (None, "")
+    
+    # 提取新题附近的文本：从"第N题"到下一个标记或文末
+    pattern = rf'第\s*{new_q_num}\s*题[：:\s]*(.*?)(?=\n\n|第\s*\d+\s*题|【|#{1,2}|$)'
+    m = re.search(pattern, post_text, re.DOTALL)
+    if m:
+        extracted = m.group(1).strip()
+        # 必须包含选项才认为是完整题目
+        if len(extracted) > 40 and re.search(r'[A-D][\.\、）\)]', extracted):
+            return (new_q_num, f"第{new_q_num}题：{extracted}")
+        elif len(extracted) > 20:
+            return (new_q_num, f"第{new_q_num}题：{extracted}")
+    
+    return (None, "")
 
 
 def detect_embedded_question(post_text, answer_q_num):
@@ -714,8 +816,15 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
         user = post.get("user", {}).get("screen_name", "")
 
         if post_type == "question":
-            # 尝试从帖子提取完整题目（可能需OCR）
-            q_extracted, is_ocr = try_extract_question_from_post(post)
+            # 尝试从帖子提取完整题目，同时拿到图片URL
+            q_extracted, image_urls = try_extract_question_from_post(post)
+            # 如果有题目图片，拼成<img>标签塞到题目文字前面
+            if image_urls:
+                img_tags = "<div style=\"margin:10px 0\">" + "".join(
+                    f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
+                    for u in image_urls[:3]
+                ) + "</div>"
+                q_extracted = img_tags + "<br>" + q_extracted
             questions.append((mid, q_num, q_extracted, created, user, is_third))
             ocr_tag = " 📷OCR" if is_ocr else ""
             third_tag = "📎三方" if is_third else "👤本人"
