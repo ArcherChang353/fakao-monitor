@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body { font-family: -apple-system,'PingFang SC','Microsoft YaHei',sans-serif; color:#2c3e50; line-height:1.8; max-width:680px; margin:0 auto; padding:0; background:#f5f6fa; }
+.header { background: linear-gradient(135deg,#1a1a2e,#16213e); color:#fff; padding:20px 22px; text-align:center; }
+.header h1 { margin:0; font-size:18px; font-weight:600; letter-spacing:1px; }
+.header .date { font-size:12px; opacity:.7; margin-top:4px; }
+.header .sub { font-size:11px; opacity:.5; margin-top:2px; }
+.card { background:#fff; margin:10px 12px; border-radius:10px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+.card-head { padding:12px 16px; display:flex; align-items:center; gap:8px; border-bottom:1px solid #f0f0f0; }
+.card-head .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.card-head .name { font-weight:600; font-size:14px; }
+.card-head .src { font-size:11px; color:#999; }
+.card-head .badge { font-size:10px; padding:1px 7px; border-radius:8px; color:#fff; flex-shrink:0; }
+.q-section { padding:14px 16px; font-size:13.5px; color:#2c3e50; }
+.q-section .q-label { display:inline-block; background:#fff3cd; color:#856404; font-size:10px; padding:2px 8px; border-radius:8px; font-weight:600; margin-bottom:8px; letter-spacing:1px; }
+.a-divider { margin:0 16px; border:none; border-top:2px dashed #e0e0e0; position:relative; height:40px; display:flex; align-items:center; justify-content:center; }
+.a-divider span { background:#fff; padding:0 12px; font-size:11px; color:#bbb; letter-spacing:2px; position:absolute; }
+.a-section { padding:6px 16px 18px; font-size:13.5px; color:#555; }
+.a-section .a-label { display:inline-block; background:#d4edda; color:#155724; font-size:10px; padding:2px 8px; border-radius:8px; font-weight:600; margin-bottom:8px; letter-spacing:1px; }
+.no-result { padding:16px; color:#bbb; font-size:13px; text-align:center; font-style:italic; }
+strong.law { color:#c0392b; font-weight:600; }
+strong.num { color:#2980b9; font-weight:600; }
+.link-row { padding:8px 16px; background:#fafafa; border-top:1px solid #f5f5f5; font-size:12px; }
+.link-row a { color:#6c5ce7; text-decoration:none; }
+.link-row a:hover { text-decoration:underline; }
+.summary { background:#f8f9fa; margin:10px 12px; border-radius:8px; padding:12px 16px; font-size:12px; color:#888; text-align:center; }
+.summary b { color:#2c3e50; }
+.footer { text-align:center; padding:16px; font-size:10px; color:#ccc; }
+@media (prefers-color-scheme:dark) {
+  body { background:#1a1a2e; color:#ddd; }
+  .card { background:#16213e; border:1px solid #0f3460; }
+  .card-head { border-color:#0f3460; }
+  .q-section { color:#ddd; }
+  .a-section { color:#bbb; }
+  .a-divider span { background:#16213e; }
+  .summary { background:#16213e; color:#888; }
+  .summary b { color:#ddd; }
+  .no-result { color:#555; }
+  .link-row { background:#0f3460; border-color:#1a1a2e; }
+}
+</style></head><body>
+    <div class="header">
+  <h1>📝 法考每日一题</h1>
+  <div class="date">06月17日 周三</div>
+  <div class="sub">v3.2 · 全量回溯缓存 · 智能题目提取 · Q&A完整呈现</div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#e74c3c"></span>
+    <span class="name">行政法</span>
+    <span class="src">李佳（行政法）</span>
+    <span class="badge" style="background:#27ae60">已更新</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    ### 一、核心内容与最新动态<br>1.  <strong>题目范围与形式</strong>  <br>    每日一题涵盖行政法高频考点，包含<strong>客观题（1-108题）</strong>和<strong>主观题（1-41题）</strong>两个系列。题目形式为案例分析型选择题，辅以视频解析（如第7、9题强制措施程序拆解）。  <br>2.  <strong>新法同步更新</strong>  <br>    因2026年5月新颁布的<strong class="law">《行政复议法实施条例》</strong>，李佳紧急补录修订题目：  <br>    - 调整复议程序中"口头委托"规则，明确<strong>取消口头委托</strong>，须全部书面化；  <br>    - 细化查封扣押程序，强调紧急情况下可事后补批（财产类24小时内，人身类立即补办）。  <br>3.  <strong>争议选项精析</strong>
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    以第9题为例，C选项"涉嫌犯罪物品移送需口头告知"被判定错误，因移送必须<strong>书面告知当事人</strong>；同时明确D选项"节假日不得实施查封扣押"不成立，因强制措施本质具"预防性"，无时间限制。<br>### 二、备考价值与使用建议<br>1.  <strong>直击命题重点</strong>  <br>    - <strong>复议机关判定</strong>：遵循"地方事务归政府"原则，如县公安局为被申请人时，复议机关为县政府（垂直管理部门除外）；  <br>    - <strong>程序合规要点</strong>：如扣押需2名以上执法资格人员、当场交付决定书及清单；  <br>    - <strong>高频混淆辨析</strong>：如"应当"（原则上）与"不得"（绝对禁止）的术语区分，影响程序合法性判断。  <br>2.  <strong>配套资源整合</strong>  <br>    - <strong>免费获取方式</strong>：转赞微博后私信关键词（如"行政法"）获取PDF版题目合集；  <br>    - <strong>应试工具</strong>：包括考前必背28句、程序对比表、错误率TOP5题清单（如授权无效视为委托、执行协议协商范围等）。  <br>3.  <strong>考生实证反馈</strong>  <br>    2025年法考真题中，强拆程序合法性、复议维持共同被告等考点与每日一题吻合度高，考生称"考场多数题目可快速作答"。<br>### 三、适用场景与策略<br>-   <strong>冲刺阶段</strong>：优先刷"每日一题"视频解析版，聚焦新法调整点（如复议前置范围扩大）；  <br>-   <strong>基础巩固</strong>：搭配<strong class="law">《考前100题》</strong>文字版速记口诀（如"降级吊证件，责令关停业"概括处罚听证范围）；  <br>-   <strong>模考自测</strong>：通过错题统计（如查封扣押程序误判率达63%）反向查缺。
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/cardlist?containerid=100103type%3D260%26q%3D%E8%A1%8C%E6%94%BF%E6%B3%95%E6%9D%8E%E4%BD%B3%20%E6%AF%8F%E6%97%A5%E4%B8%80%E9%A2%98%26t%3D&extparam=ai_model%3Ddeepseek%26ori_ai_title%3D%E5%8F%82%E8%80%83%E5%8D%9A%E6%96%87%26material_version%3D1778491314">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#e67e22"></span>
+    <span class="name">刑法</span>
+    <span class="src">柏浪涛（刑法）</span>
+    <span class="badge" style="background:#27ae60">已更新</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    柏浪涛2026年法考刑法“每日一题”系列已持续更新，目前最新汇总已出至第73题，全网众多法考资料账号和官方机构（如众合、竹马APP）均在免费提供题目与解析的PDF版下载，成为当前法考考生刷题复习、巩固刑法核心考点的重要配套资料。<br>### 一、2026年柏浪涛每日一题更新现状<br><br>1. <strong>更新进度与汇总范围</strong><br>   - 众合官方账号“竹马APP”已整理发布<strong class="law">《柏浪涛-2026法考刑法每日一题 1-73整理》</strong>PDF版。<br>   - 多个微博账号（如“法考小熊猫”“广东众合法考法硕咨询”）持续提供每日一题的带背笔记、核心考点汇总以及纯题目版/解析版PDF。<br>   - 部分资料包中收录了“柏浪涛刑法每日一题（1-60题）”甚至更全的版本。
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    2. <strong>获取途径</strong><br>   - 在微博平台关注“竹马APP”“众合法考教育”“广东众合”等账号，通过转赞评后私信发送“26柏神”或“刑法每日一题”即可获取PDF。<br>   - 各类法考资料分享账号（如“多味杂陈”“每天补脑的岸岸”）提供了夸克网盘链接，可直接下载26法考柏浪涛刑法每日一题的纯题版和解析版。<br>   - 部分账号（如“itsss的法考加油站”）直接给出了短链接：``（题目+解析）。<br><br>3. <strong>内容特点</strong><br>   - 题目覆盖刑法总则与分则核心考点：结果加重犯、因果关系、正当防卫与紧急避险、故意犯罪形态、共同犯罪、财产犯罪、人身犯罪、贪污贿赂罪等。<br>   - 每道题均配备详细解析，部分账号还整理了“带背之核心考点”笔记，将题目与精讲书知识点对应。<br>   - 题目类型以单选题和多选题为主，与法考客观题风格一致，注重观点展示和案例分析。<br>### 二、该系列资料的使用建议<br><br>1. <strong>搭配系统学习</strong><br>   - 每日一题适合在完成柏浪涛精讲卷或系统强化课之后，用于刷题巩固和检验知识点掌握情况。<br>   - 部分账号将每日一题与“柏浪涛刑法观点展示大汇总”“刑法常考法条定刑升格条件汇总”等资料打包推荐，建议结合使用。<br><br>2. <strong>关注解析中的考点归纳</strong><br>   - 解析中常附有“考点背诵”或“霹雳提醒”模块，直接对应柏浪涛精讲书的页码，便于快速回顾教材原文。<br>   - 对于因果关系的介入因素判断、正当防卫的客观性认定等高频难点，每日一题多次以不同案例重复训练，建议重点复盘。<br><br>3. <strong>注意版本时效</strong><br>   - 2026年每日一题从2026年3月左右开始陆续发布，目前仍在持续更新中，建议优先使用标识为“26最新”的版本。<br>   - 部分账号同时提供“纯题目版”和“解析版”两个PDF，便于先自测再核对，适合刷题节奏。<br>### 三、注意事项<br>- 网上存在售卖所谓“柏浪涛押题神秘资料”或“内部消息”的信息，柏浪涛本人曾在备考提示中澄清：没有押题神秘资料和内部消息，只有考前聚焦直播课讲义。请考生以众合官方渠道及柏浪涛认证账号（微博“柏浪涛的刑法观”）发布的内容为准，谨防受骗。
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/cardlist?containerid=100103type%3D260%26q%3D%E6%9F%8F%E6%B5%AA%E6%B6%9B%20%E6%AF%8F%E6%97%A5%E4%B8%80%E9%A2%98%26t%3D&extparam=ai_model%3Ddeepseek%26ori_ai_title%3D%E5%8F%82%E8%80%83%E5%8D%9A%E6%96%87%26material_version%3D1781536022">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#2980b9"></span>
+    <span class="name">民法</span>
+    <span class="src">Q186 ✅完整(cache)</span>
+    <span class="badge" style="background:#27ae60">📡完整Q&A</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    2026年孟献贵民商法每日一题186[爱慕][爱慕]<br><br>大家一定要把客观题当主观题来做，“品质刷题”，训练自己的法律思维[锦鲤附体][锦鲤附体]<br><br>答案：请放在评论区并尽量说明每个选项为什么对？为什么不对？法律依据为何？以作答主观题的规范标准来做选择题[奋斗][奋斗] ​​​
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    孟献贵民法[超话]2026年孟献贵 2026年孟献贵民商法每日一题186[爱慕][爱慕]<br><br>大家一定要把客观题当主观题来做，“品质刷题”，训练自己的法律思维[锦鲤附体][锦鲤附体]<br><br>答案：请放在评论区并尽量说明每个选项为什么对？为什么不对？法律依据为何？以作答主观题的规范标准来做选择题[奋斗][奋斗] ​​​
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/detail/5307896356145444">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#8e44ad"></span>
+    <span class="name">民诉</span>
+    <span class="src">戴鹏（民诉）</span>
+    <span class="badge" style="background:#27ae60">已更新</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 综合摘要</span><br>
+    ### 核心教学与资料特色  <br>1. <strong>民诉法条定位与解题技巧</strong>  <br>   戴鹏的课程强调"技术流"解题，尤其擅长梳理法条逻辑体系。其主讲的<strong class="law">《民诉法条定位课》</strong>结合真题拆解考点，帮助考生快速匹配答题依据。2025-2026年更新的课程中，他进一步优化了"三步定位法"（快速回顾→预习→真题演练），并通过"每日一问"环节强化知识整理。  <br>2. <strong>主观题必背模板</strong>  <br>   针对主观题，他总结的<strong class="law">《民诉主观必背60句》</strong>覆盖主管、管辖、证明责任等高频考点，以表格对比形式呈现三诉差异（如专属管辖情形）。该资料被考生称为"民诉急救包"，2025版新增仲裁协议效力、执行异议之诉等新法要点。<br>### 最新动态与考生反馈  <br>- <strong>2026年资料更新</strong>：  <br>  - 与孟献贵、柏浪涛等名师合编<strong class="law">《民商诉一本通》</strong>，聚焦综合案例（如"撤销权诉讼+合同履行抗辩"混合题型）；  <br>  - 推出<strong class="law">《飞升100题》</strong>解析册，结合民法典合同编司法解释更新违约金证明责任等热点。  <br>- <strong>考生实用策略</strong>：  <br>  多数考生采用"法条定位课+每日一题"组合（如搭配左宁刑诉、李佳行政法），通过其设计的7天学习计划（每日1专题+真题）突破民诉薄弱环节。有反馈称其案例模型"覆盖80%考点"，但需注意新法修订部分（如2024年<strong class="law">《公司法》</strong>修订条款）需补充刷题。<br>### 备考价值与建议  <br>戴鹏的资料以应试性强著称，尤其适合时间紧张的考生：  <br>- <strong>客观题</strong>：优先使用<strong class="law">《真金题卷》</strong>和系统强化讲义，重点掌握证明责任分配规则（如环境污染案中的举证倒置）；  <br>- <strong>主观题</strong>：必练<strong class="law">《法条定位课》</strong>和<strong class="law">《60句模板》</strong>，搭配"每日一题"训练请求权分析（如代位权诉讼与撤销权诉讼竞合情形）。2026年考生反馈，其课程对"民商诉综合题"提分效果显著，但需结合官方案例指导用书拓展深度。
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/cardlist?containerid=100103type%3D260%26q%3D%E6%88%B4%E9%B9%8F%20%E6%AF%8F%E6%97%A5%E4%B8%80%E9%A2%98%26t%3D&extparam=ai_model%3Ddeepseek%26ori_ai_title%3D%E5%8F%82%E8%80%83%E5%8D%9A%E6%96%87%26material_version%3D1780129776">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#27ae60"></span>
+    <span class="name">刑诉</span>
+    <span class="src">Q26 🆕新题</span>
+    <span class="badge" style="background:#3498db">📡新题</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 综合摘要</span><br>
+    刑诉每日一题第26题决战法考 左宁刑诉每日一题 专业视频创作季  ​
+    <br><br><span style="display:inline-block;background:#d4edda;color:#155724;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;">✅ 答案</span><br>
+    📌 今日新题，答案将于明日公布
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/detail/5307957731919226">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#16a085"></span>
+    <span class="name">三国法</span>
+    <span class="src">杨帆（三国法）</span>
+    <span class="badge" style="background:#27ae60">已更新</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    以下是关于法律教育领域 <strong>杨帆老师“每日一题”</strong> 的全面整理，涵盖其内容特点、获取方式和典型题目解析，同时简要区分同名主持人信息：<br>### 📚 <strong>一、杨帆（法考讲师）每日一题最新动态（2025年8月版）</strong><br>1. <strong>科目与形式</strong>  <br>   - <strong>科目</strong>：三国法（国际公法、国际私法、国际经济法），部分题目结合商经、民法综合命题。  <br>   - <strong>形式</strong>：  <br>     - <strong>纯题目版</strong>：供自测练习（如“杨帆三国法每日一题-纯题版”）。  <br>     - <strong>解析版</strong>：含答案、考点标注及法律依据（如引用<strong class="law">《反外国制裁法》</strong><strong class="law">《外国国家豁免法》</strong>等）。  <br>     - <strong>冲刺特辑</strong>：30题重难点突破（如“杨帆三国核心30题”）。<br><br>2. <strong>题目特点与考点</strong>  <br>   - <strong>典型题型示例</strong>：  <br>     - <strong>国际公法</strong>：甲国议会通过涉疆议案，中国采取反制措施是否合法？  <br>       → 答案：中国可查封甲国人员境内财产（<strong class="law">《反外国制裁法》</strong>授权）。  <br>     - <strong>国际私法</strong>：跨国遗产继承中，不动产适用物之所在地法，动产适用被继承人经常居所地法。  <br>     - <strong>海洋法</strong>：专属经济区资源开发需沿海国许可，他国船舶享无害通过权。  <br>   - <strong>命题趋势</strong>：结合最新法规（如2025年<strong class="law">《国籍法》</strong>案例）、国际热点（如制裁、领土继承）。
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    3. <strong>获取渠道与更新</strong>  <br>   - <strong>平台</strong>：微博认证账号（、）、教育机构网盘。  <br>   - <strong>更新频率</strong>：截至2025年8月29日，持续更新至Day41题，部分合集含60题跨科综合卷。  <br>   - <strong>配套资源</strong>：  <br>     - 三国法口诀速记  <br>     - 卷二暑期带背（与刘安琪、李劲松联合命题）。<br>### 💡 <strong>二、杨帆（央视主持人）相关动态</strong><br>1. <strong>近期节目热点</strong>（2025年8月）：  <br>   - 综艺<strong class="law">《你好时光》</strong>与沙溢互动：因“手凉疑云”即兴编造“低血糖”化解质疑，成出圈笑点。  <br>   - 央视七夕晚会主持<strong class="law">《古韵新声》</strong>，2025春晚确认担任武汉分会场主持人。<br>### ⚠️ <strong>三、注意事项</strong><br>1. <strong>资料时效性</strong>：法考每日一题需以 <strong>2025年7-8月版本</strong> 为准，旧版（2022年）仅具参考价值。  <br>2. <strong>版权风险</strong>：普通账号分享的未授权合集可能存在错误，建议优先选择认证教育账号发布内容。  <br>3. <strong>重名区分</strong>：  <br>   - <strong>法律讲师杨帆</strong>：主攻三国法，每日一题以法考应试为核心。  <br>   - <strong>主持人杨帆</strong>：活跃于央视综艺，无“每日一题”内容。<br><br>如需最新题目合集链接或具体题目解析，可进一步定向查询🔍。
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/cardlist?containerid=100103type%3D260%26q%3D%E6%9D%A8%E5%B8%86%20%E6%AF%8F%E6%97%A5%E4%B8%80%E9%A2%98%26t%3D&extparam=ai_model%3Ddeepseek%26ori_ai_title%3D%E5%8F%82%E8%80%83%E5%8D%9A%E6%96%87%26material_version%3D1756770070">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#2c3e50"></span>
+    <span class="name">理论法</span>
+    <span class="src">马峰（理论法）</span>
+    <span class="badge" style="background:#27ae60">已更新</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    考生普遍关注马峰的每日一题在法考和法硕备考中的实战价值，尤其对其题目难度、覆盖范围及获取方式存在高频讨论。<br>### 一、核心内容与适用场景  <br>1. <strong>法考主观题核心资源</strong>  <br>   马峰的每日一题主要聚焦<strong>法治思想背诵</strong>（如10天带背计划）和<strong>主观题答题方法论</strong>，覆盖法治与德治、司法改革等高频考点。考生反馈其内容与主观题真题方向高度契合，部分题目需结合材料灵活应用。  <br><br>2. <strong>法硕宪法与法理学训练</strong>  <br>   针对法硕考生，每日一题侧重<strong>宪法条文分析</strong>和<strong>法理案例辨析</strong>（如国家机构职权、法律原则应用），题目常附带记忆口诀（如"五连鞭"）。有考生认为难度高于真题，需反复训练才能掌握。
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    3. <strong>冲刺阶段辅助资料</strong>  <br>   - <strong>法考</strong>：与李佳行政法、左宁刑诉等每日一题搭配使用，形成跨学科知识串联。  <br>   - <strong>法硕</strong>：冲刺期常与车润海刑法、岳业鹏民法简答汇总合并为"考前点睛包"。<br>### 二、考生反馈与使用建议  <br>1. <strong>题目难度争议</strong>  <br>   - 部分考生认为题目设计<strong>比真题更复杂</strong>，尤其融合型案例题需综合多知识点，易引发挫败感但提升分析能力。  <br>   - 主观题方向侧重<strong>法言法语表达</strong>和<strong>逻辑架构</strong>，对基础薄弱者挑战较大。  <br><br>2. <strong>高效使用策略</strong>  <br>   - <strong>资源获取</strong>：通过微博私信"众合法考法硕"账号或转发相关博文，可获电子档；部分资料平台（如夸克网盘）汇总整理历年题目。  <br>   - <strong>时间安排</strong>：建议考前1-2个月启动每日训练，搭配真题错题复盘。  <br>   - <strong>重点聚焦</strong>：法考优先掌握法治思想本质、司法公正等高频主题；法硕需强化宪法条文对比和法理案例分析。<br>### 三、注意事项  <br>- <strong>资料甄别</strong>：部分非官方渠道流传的"马峰每日一题合集"存在内容混杂问题，建议以众合教育发布为准。  <br>- <strong>学科差异</strong>：法考侧重观点展示与法条援引（如刑诉法条定位），法硕更重理论表述严谨性，需区分训练重点。  <br><br>&gt; 💡 <strong>风险提示</strong>：考生反馈的"比真题难"可能因个人基础差异导致，实际需结合自身薄弱点选择性训练，避免盲目刷题。
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/cardlist?containerid=100103type%3D260%26q%3D%E9%A9%AC%E5%B3%B0%20%E6%AF%8F%E6%97%A5%E4%B8%80%E9%A2%98%26t%3D&extparam=ai_model%3Ddeepseek%26ori_ai_title%3D%E5%8F%82%E8%80%83%E5%8D%9A%E6%96%87%26material_version%3D1765939711">题目原文</a></div>
+</div>
+<div class="card">
+  <div class="card-head">
+    <span class="dot" style="background:#d35400"></span>
+    <span class="name">商经知</span>
+    <span class="src">Q27 ⚠️缺题目</span>
+    <span class="badge" style="background:#3498db">📡新题</span>
+  </div>
+  <div class="q-section">
+    <span class="q-label">📌 题目</span><br>
+    📌 郄鹏恩每日一题 第27题
+  </div>
+  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>
+  <div class="a-section">
+    <span class="a-label">✅ 答案 / 解析</span><br>
+    公司法每日一题27答案<br>决战法考 一起做个题 专业视频创作季  ​
+  </div>
+  <div class="link-row">🔗 <a href="https://weibo.com/detail/5309407275256372">答案原文</a></div>
+</div>
+<div class="summary">
+<b>8/8</b> 科目已获取 · <b>1</b> 完整Q&A 🔗 · <b>3</b> 来自真实帖子 📡 · 自动生成于 GitHub Actions</div>
+<div class="footer">
+<p>☁️ 法考云端监控 v3.2 · 每日8:30 · 全量回溯缓存智能Q&A配对</p>
+</div>
+</body></html>

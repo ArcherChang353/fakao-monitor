@@ -826,9 +826,9 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                 ) + "</div>"
                 q_extracted = img_tags + "<br>" + q_extracted
             questions.append((mid, q_num, q_extracted, created, user, is_third))
-            ocr_tag = " 📷OCR" if is_ocr else ""
+            img_tag = " 📷" if image_urls else ""
             third_tag = "📎三方" if is_third else "👤本人"
-            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{ocr_tag} | {created}")
+            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{img_tag} | {created}")
             # 🔥 存入题目缓存，供明天配对答案
             if q_num is not None:
                 weibo_link = f"https://weibo.com/detail/{mid}"
@@ -1525,6 +1525,16 @@ def main():
 
     html = build_html_report(slot_results)
 
+    # 本地保存HTML预览（便于调试和事后查看）
+    try:
+        today_ymd = datetime.now(tz).strftime("%Y%m%d")
+        preview_path = f"preview-{today_ymd}.html"
+        with open(preview_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"\n💾 HTML预览已保存: {preview_path}")
+    except Exception as e:
+        print(f"\n⚠️ HTML预览保存失败: {e}")
+
     today_mmdd = datetime.now(tz).strftime("%m/%d")
     subject = f"【法考每日一题】{today_mmdd} | v3.2全量回溯 | {success_count}/{total_slots}已获取"
     if complete_count > 0:
@@ -1535,7 +1545,7 @@ def main():
     if send_email(subject, html):
         print(f"\n✅ 任务完成! 邮件已发送至 {QQ_EMAIL}")
     else:
-        print(f"\n❌ 邮件发送失败")
+        print(f"\n❌ 邮件发送失败（但HTML预览已保存到本地）")
 
 
 if __name__ == "__main__":
