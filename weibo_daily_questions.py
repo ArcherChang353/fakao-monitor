@@ -46,7 +46,7 @@ TEACHER_SLOTS = {
     "行政法": {
         "display_name": "李佳（行政法）",
         "color": "#e74c3c",
-        "hashtag_query": "佳佳每日一题",
+        "hashtag_query": "李佳每日一题",
         "teacher_filter": "行政法李佳",
         "fallback_queries": [
             {"name": "李佳", "label": "李佳（行政法）", "query": "行政法李佳 每日一题"},
@@ -706,7 +706,50 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     # 🔥 只使用老师本人帖子，第三方内容不做主源
     own_answers = [a for a in answers if not a[5]]
     own_questions = [q for q in questions if not q[5]]
-    
+
+    # ============ 🆕 跨号配对模式 ============
+    # 老师同一天发：昨天答案(Q_N, 视频) + 今天新题(Q_M, 文字), N ≠ M
+    # 例：李佳 今天发 Q46答案(视频) + Q47题目(文字)
+    # 此时应以新题目为主，答案标注为视频链接
+    if own_answers and own_questions:
+        a_best = own_answers[0]
+        q_best = own_questions[0]
+        a_mid, a_num, a_text, a_created, a_user, a_third = a_best
+        q_mid, q_num, q_text, q_created, q_user, q_third = q_best
+
+        if a_num is not None and q_num is not None and a_num != q_num:
+            # 跨号配对！
+            answer_link = f"https://weibo.com/detail/{a_mid}"
+            question_link = f"https://weibo.com/detail/{q_mid}"
+
+            # 答案帖：检测是否为视频
+            if len(a_text.strip()) < 30:
+                answer_text = f"📹 第{a_num}题答案解析为视频，点击链接查看"
+            else:
+                answer_text = a_text
+
+            # 存入题目缓存供明天配对
+            store_question_in_cache(teacher_filter, q_num, q_text, question_link, q_created, q_user, question_cache)
+            # 答案帖也缓存（视频帖文本短但有题号）
+            if a_num is not None:
+                store_question_in_cache(teacher_filter, a_num, a_text, answer_link, a_created, a_user, question_cache)
+            save_post_cache(post_cache)
+            save_question_cache(question_cache)
+
+            source_label = f"Q{q_num} 🆕新题 | Q{a_num}答案📹视频"
+            print(f"      🔀 跨号配对: 新题Q{q_num}({len(q_text)}字) + 答案Q{a_num}视频")
+
+            return {
+                "question_text": q_text,
+                "answer_text": answer_text,
+                "question_link": question_link,
+                "answer_link": answer_link,
+                "source_label": source_label,
+                "q_num": q_num,
+                "is_complete": True,
+            }
+
+    # ============ 标准配对模式（同号Q&A或仅答案/仅题目） ============
     if not own_answers:
         # 没有老师的答案帖
         if own_questions:
@@ -714,6 +757,10 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             q = own_questions[0]
             q_mid, q_num, q_text, q_created, q_user, q_third = q
             weibo_link = f"https://weibo.com/detail/{q_mid}"
+            # 存入缓存
+            store_question_in_cache(teacher_filter, q_num, q_text, weibo_link, q_created, q_user, question_cache)
+            save_post_cache(post_cache)
+            save_question_cache(question_cache)
             return {
                 "question_text": q_text,
                 "answer_text": f"📌 今日新题，答案将于明日公布",
@@ -727,18 +774,18 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
         print(f"      ⚠️ 未找到{teacher_filter}本人帖子，将触发AI摘要兜底")
         return None
 
-    # 从本人答案帖出发，找匹配题目
-    all_answers = own_answers  # 仅本人答案，不再混入第三方
+    # 从本人答案帖出发，找匹配题目（同号配对）
+    all_answers = own_answers
     best_answer = all_answers[0]
     a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
     answer_link = f"https://weibo.com/detail/{a_mid}"
-    
+
     # 查找匹配题目：优先缓存，其次当天帖子
     question_text = ""
     question_link = ""
     q_source = ""  # "cache" | "current" | "deep" | "fullscan" | "answer_extract" | ""(not found)
     deep_n = min(MAX_DEEP_POSTS, len(mblogids))  # 预计算深度搜索范围
-    
+
     if a_num is not None:
         # 🔥 关键：先查题目缓存（昨天的题目）
         cached_q = find_question_in_cache(teacher_filter, a_num, question_cache)
@@ -747,7 +794,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             question_link = cached_q.get("weibo_link", "")
             q_source = "cache"
             print(f"      📦 缓存命中: Q{a_num}题目（{cached_q.get('cached_on','?')}存入）")
-        
+
         # 缓存没命中，查当天帖子中是否有同号题目
         if not question_text:
             matching_qs = [q for q in questions if q[1] == a_num]
@@ -803,7 +850,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             # 存入缓存供后续使用
             if a_num is not None:
                 store_question_in_cache(teacher_filter, a_num, extracted_q, answer_link, a_created, a_user, question_cache)
-    
+
     # 🔥 持久化题目缓存（深度搜索+答案提取的结果也写入磁盘）
     if question_cache:
         save_question_cache(question_cache)
@@ -812,7 +859,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
         question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
         question_link = ""
 
-    
+
     # 构建来源标注
     if a_num:
         if q_source:
