@@ -561,6 +561,42 @@ def try_extract_question_from_post(post_data):
     return (text, False)
 
 
+def detect_embedded_question(post_text, answer_q_num):
+    """
+    检测答案帖中是否嵌入了下一题的题目（李佳模式：同一帖=昨天答案视频+今天新题文字）。
+    尝试从答案帖文本中提取嵌入的新题目。
+    返回: (new_q_num, question_text) 或 (None, "")
+    """
+    if not post_text or len(post_text) < 80:
+        return (None, "")
+    
+    # 查找所有"第X题"引用
+    all_q_nums = []
+    for m in re.finditer(r'第\s*(\d+)\s*题', post_text):
+        all_q_nums.append(int(m.group(1)))
+    
+    if len(all_q_nums) < 2:
+        return (None, "")
+    
+    # 找到最大的题号（新题）
+    new_q_num = max(all_q_nums)
+    if new_q_num == answer_q_num:
+        return (None, "")
+    
+    # 提取新题附近的文本：从"第N题"到下一个标记或文末
+    pattern = rf'第\s*{new_q_num}\s*题[：:\s]*(.*?)(?=\n\n|第\s*\d+\s*题|【|#{1,2}|$)'
+    m = re.search(pattern, post_text, re.DOTALL)
+    if m:
+        extracted = m.group(1).strip()
+        # 必须包含选项才认为是完整题目
+        if len(extracted) > 40 and re.search(r'[A-D][\.\、）\)]', extracted):
+            return (new_q_num, f"第{new_q_num}题：{extracted}")
+        elif len(extracted) > 20:
+            return (new_q_num, f"第{new_q_num}题：{extracted}")
+    
+    return (None, "")
+
+
 # ============ 从答案帖提取题目（fallback） ============
 
 def try_extract_question_from_answer(answer_text):
@@ -653,14 +689,6 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             mblogids = sorted(set(mblogids + fb_ids), reverse=True)
             print(f"      hashtag+fallback合并: {len(set(mblogids))} 个唯一引用帖")
 
-    # 🔥 第三层fallback：裸搜老师名字（有些老师不用"每日一题"关键词）
-    if check_api_ok():
-        bare_data = search_zhisou(teacher_filter, token)
-        if bare_data:
-            bare_ids = extract_mblogids(bare_data)
-            mblogids = sorted(set(mblogids + bare_ids), reverse=True)
-            print(f"      裸搜'{teacher_filter}'合并: {len(set(mblogids))} 个唯一引用帖")
-
     fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
     print(f"      检查最近 {fetch_n} 个帖子...")
 
@@ -700,6 +728,14 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
             answers.append((mid, q_num, text, created, user, is_third))
             third_tag = "📎三方" if is_third else "👤本人"
             print(f"         ✅ 答案帖 Q{q_num} | {user} {third_tag} | {created}")
+            # 🔥 检测嵌入的新题（李佳模式：同帖含答案视频+新题文字）
+            if not is_third and q_num is not None:
+                emb_q_num, emb_q_text = detect_embedded_question(text, q_num)
+                if emb_q_num and emb_q_text:
+                    questions.append((mid, emb_q_num, emb_q_text, created, user, False))
+                    print(f"         🔀 从答案帖中检出嵌入新题 Q{emb_q_num} ({len(emb_q_text)}字)")
+                    weibo_link = f"https://weibo.com/detail/{mid}"
+                    store_question_in_cache(teacher_filter, emb_q_num, emb_q_text, weibo_link, created, user, question_cache)
         elif post_type == "collection":
             print(f"         📦 合集帖 | {user} | {created}")
 
