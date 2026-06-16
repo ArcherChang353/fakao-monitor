@@ -730,6 +730,7 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     # 从本人答案帖出发，找匹配题目
     all_answers = own_answers  # 仅本人答案，不再混入第三方
     best_answer = all_answers[0]
+    a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
     answer_link = f"https://weibo.com/detail/{a_mid}"
     
     # 查找匹配题目：优先缓存，其次当天帖子
