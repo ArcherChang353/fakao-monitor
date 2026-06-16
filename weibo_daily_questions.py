@@ -46,7 +46,7 @@ TEACHER_SLOTS = {
     "行政法": {
         "display_name": "李佳（行政法）",
         "color": "#e74c3c",
-        "hashtag_query": "佳佳每日一题",
+        "hashtag_query": "行政法每日一题",
         "teacher_filter": "行政法李佳",
         "fallback_queries": [
             {"name": "李佳", "label": "李佳（行政法）", "query": "行政法李佳 每日一题"},
