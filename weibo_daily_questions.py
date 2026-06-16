@@ -703,15 +703,15 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     save_question_cache(question_cache)
 
     # Step 3: 配对Q&A —— 核心逻辑
-    # 优先老师本人答案帖，按时间排序
+    # 🔥 只使用老师本人帖子，第三方内容不做主源
     own_answers = [a for a in answers if not a[5]]
-    all_answers = own_answers + [a for a in answers if a[5]]  # 本人优先
+    own_questions = [q for q in questions if not q[5]]
     
-    if not all_answers:
-        # 没有答案帖，但有题目帖 → 返回新题目（等明天的答案）
-        if questions:
-            own_qs = [q for q in questions if not q[5]]
-            q = own_qs[0] if own_qs else questions[0]
+    if not own_answers:
+        # 没有老师的答案帖
+        if own_questions:
+            # 有老师的题目帖 → 返回新题目（等明天的答案）
+            q = own_questions[0]
             q_mid, q_num, q_text, q_created, q_user, q_third = q
             weibo_link = f"https://weibo.com/detail/{q_mid}"
             return {
@@ -723,12 +723,13 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
                 "q_num": q_num,
                 "is_complete": False,
             }
+        # 没有老师本人的任何帖子 → 返回None，由上层触发AI fallback
+        print(f"      ⚠️ 未找到{teacher_filter}本人帖子，将触发AI摘要兜底")
         return None
 
-    # 从答案帖出发，找匹配题目
-    # 逻辑：今天的答案A_N → 题目Q_N在昨天，应从缓存中找
+    # 从本人答案帖出发，找匹配题目
+    all_answers = own_answers  # 仅本人答案，不再混入第三方
     best_answer = all_answers[0]
-    a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
     answer_link = f"https://weibo.com/detail/{a_mid}"
     
     # 查找匹配题目：优先缓存，其次当天帖子
