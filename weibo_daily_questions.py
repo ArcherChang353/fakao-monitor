@@ -360,13 +360,20 @@ def fetch_status(mblogid, token, post_cache=None, _retry=0):
         resp = urllib.request.urlopen(url, timeout=15)
         result = json.loads(resp.read())
         track_api_call()
-        if result.get("code") == 0:
+        code = result.get("code")
+        if code == 0:
             data = result.get("data", {})
             # 🔑 关键修复：微博长文在 longText 字段，text 是截断版
             long_text = data.get("longText") or ""
             if long_text and len(long_text) > len(data.get("text", "")):
                 print(f"      📜 检测到长文，已替换截断文本 ({len(data.get('text',''))}→{len(long_text)}字)")
                 data["text"] = long_text
+            # 🔑 诊断：打印 text 字段长度
+            effective = long_text or data.get("text", "")
+            if len(effective) < 30:
+                print(f"      ⚠️ status_show text很短({len(effective)}字): {effective[:80]}")
+        else:
+            print(f"      ❌ status_show code={code} msg={result.get('message','')[:100]}")
     except Exception as e:
         print(f"      status_show异常 ({mblogid}): {e}")
 
@@ -423,8 +430,10 @@ def fetch_teacher_timeline(uid, token, post_cache=None, max_count=10):
         resp = urllib.request.urlopen(url, timeout=15)
         result = json.loads(resp.read())
         track_api_call()
-        if result.get("code") != 0:
-            print(f"      timeline API 错误 code={result.get('code')} msg={result.get('message','')[:60]}")
+        code = result.get("code")
+        if code != 0:
+            print(f"      ❌ timeline API 错误 code={code} msg={result.get('message','')[:100]}")
+            print(f"         完整响应: {json.dumps(result, ensure_ascii=False)[:300]}")
             return []
         posts = result.get("data", {}).get("statuses", [])
         print(f"      📜 timeline 拉到 {len(posts)} 条帖子")
@@ -816,7 +825,7 @@ def try_extract_question_from_answer(answer_text):
 
 # ============ 两阶段抓取 ============
 
-def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=None):
+def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=None, uid=None):
     """
     一级抓取：通过hashtag搜索获取真实帖子，配对Q&A。
     
@@ -1516,13 +1525,14 @@ def main():
         hashtag_query = slot["hashtag_query"]
         teacher_filter = slot["teacher_filter"]
         fallback_queries = slot["fallback_queries"]
+        uid = slot.get("uid", None)
 
         print(f"🔍 {subject} ({display})")
-        print(f"   📡 一级抓取: hashtag='{hashtag_query}' filter='{teacher_filter}'...")
+        print(f"   📡 一级抓取: hashtag='{hashtag_query}' filter='{teacher_filter}' uid={uid}...")
 
         try:
             # ============ 一级：真实帖子抓取（含跨天缓存配对） ============
-            result = fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache)
+            result = fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache, uid=uid)
             api_calls += 1  # 搜索调用
 
             if result:
