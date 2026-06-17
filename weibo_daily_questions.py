@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-法考每日一题抓取 v3.0 — 真实帖子抓取版
-核心改进：不再使用智搜AI摘要，而是通过hashtag搜索→提取mblogid→status_show获取真实帖子内容
-8位老师各自配置最佳hashtag搜索词，自动匹配Q&A帖子对
-每天8:30 GMT+8 执行，云端运行
+法考每日一题抓取 v4.0 — OAuth2.0 + friends_timeline 方案
+核心：通过OAuth2.0 access_token调用friends_timeline获取关注人（8位老师）帖子，
+      筛选每日一题内容，实现Q&A配对。
+每天8:30 GMT+8 执行，云端运行（GitHub Actions）。
 """
 
 import os
@@ -11,7 +11,6 @@ import re
 import json
 import smtplib
 import time
-import tempfile
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -19,294 +18,96 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 
-# OCR 可选依赖
-try:
-    from PIL import Image
-    import pytesseract
-    HAS_OCR = True
-except ImportError:
-    HAS_OCR = False
-
 # ============ 配置 ============
 QQ_EMAIL = "jewelljaja@foxmail.com"
 QQ_SMTP_CODE = os.environ["QQ_SMTP_CODE"]
 SMTP_SERVER = "smtp.qq.com"
 SMTP_PORT = 465
 
-WEIBO_APP_ID = os.environ["WEIBO_APP_ID"]
+# OAuth2.0 配置（api.weibo.com 体系）
+WEIBO_APP_KEY = os.environ["WEIBO_APP_KEY"]
 WEIBO_APP_SECRET = os.environ["WEIBO_APP_SECRET"]
+WEIBO_ACCESS_TOKEN = os.environ.get("WEIBO_ACCESS_TOKEN", "")
 
-TOKEN_ENDPOINT = "https://open-im.api.weibo.com/open/auth/ws_token"
-SEARCH_ENDPOINT = "https://open-im.api.weibo.com/open/wis/search_query"
-STATUS_API = "https://open-im.api.weibo.com/open/weibo/status_show"
-USER_TIMELINE_API = "https://open-im.api.weibo.com/open/weibo/statuses/user_timeline"
+# OAuth2.0 API
+OAUTH_TOKEN_URL = "https://api.weibo.com/oauth2/access_token"
+FRIENDS_TIMELINE_URL = "https://api.weibo.com/2/statuses/friends_timeline.json"
+STATUS_SHOW_URL = "https://api.weibo.com/2/statuses/show.json"
 
-# ============ 8科目配置（真实帖子抓取版） ============
-# 每位老师配置：hashtag搜索词 + 教师筛选名 + 替代搜索词（fallback）
-TEACHER_SLOTS = {
-    "行政法": {
-        "display_name": "李佳（行政法）",
-        "color": "#e74c3c",
-        "uid": "2510840",
-        "hashtag_query": "行政法每日一题",
-        "teacher_filter": "行政法李佳",
-        "fallback_queries": [
-            {"name": "李佳", "label": "李佳（行政法）", "query": "行政法李佳 每日一题"},
-        ],
-    },
-    "刑法": {
-        "display_name": "柏浪涛（刑法）",
-        "color": "#e67e22",
-        "uid": "3546604065514065",
-        "hashtag_query": "柏浪涛每日一题",
-        "teacher_filter": "柏浪涛",
-        "fallback_queries": [
-            {"name": "柏浪涛", "label": "柏浪涛（刑法）", "query": "柏浪涛 每日一题"},
-        ],
-    },
-    "民法": {
-        "display_name": "孟献贵（民法）",
-        "color": "#2980b9",
-        "uid": "3546614072148177",
-        "hashtag_query": "孟献贵每日一题",
-        "teacher_filter": "孟献贵",
-        "fallback_queries": [
-            {"name": "孟献贵", "label": "孟献贵（民法）",              "query": "孟献贵 每日一题"},
-            {"name": "钟秀勇", "label": "钟秀勇（民法·瑞达）📡替代",  "query": "钟秀勇 民法"},
-            {"name": "张翔",   "label": "张翔（民法·厚大）📡替代",    "query": "张翔 民法"},
-        ],
-    },
-    "民诉": {
-        "display_name": "戴鹏（民诉）",
-        "color": "#8e44ad",
-        "uid": "19568993",
-        "hashtag_query": "戴鹏每日一题",
-        "teacher_filter": "戴鹏",
-        "fallback_queries": [
-            {"name": "戴鹏",   "label": "戴鹏（民诉）",               "query": "戴鹏 每日一题"},
-            {"name": "韩心怡", "label": "韩心怡（民诉·瑞达）📡替代",  "query": "韩心怡 民诉法"},
-        ],
-    },
-    "刑诉": {
-        "display_name": "左宁（刑诉）",
-        "color": "#27ae60",
-        "uid": "1733061450",
-        "hashtag_query": "左宁每日一题",
-        "teacher_filter": "左宁",
-        "fallback_queries": [
-            {"name": "左宁", "label": "左宁（刑诉）", "query": "左宁 每日一题"},
-        ],
-    },
-    "三国法": {
-        "display_name": "杨帆（三国法）",
-        "color": "#16a085",
-        "uid": "276804772",
-        "hashtag_query": "杨帆三国法 每日一题",
-        "teacher_filter": "杨帆",
-        "fallback_queries": [
-            {"name": "杨帆", "label": "杨帆（三国法）",                "query": "杨帆 每日一题"},
-            {"name": "殷敏", "label": "殷敏（三国法·厚大）📡替代",    "query": "殷敏 三国法"},
-        ],
-    },
-    "理论法": {
-        "display_name": "马峰（理论法）",
-        "color": "#2c3e50",
-        "uid": "3546614072148178",
-        "hashtag_query": "马峰每日一题",
-        "teacher_filter": "马峰",
-        "fallback_queries": [
-            {"name": "马峰",   "label": "马峰（理论法）",                "query": "马峰 每日一题"},
-            {"name": "杜洪波", "label": "杜洪波（理论法）📡替代",       "query": "杜洪波 法考"},
-            {"name": "宋光明", "label": "宋光明（理论法·瑞达）📡替代",  "query": "宋光明 理论法"},
-        ],
-    },
-    "商经知": {
-        "display_name": "郄鹏恩（商经知）",
-        "color": "#d35400",
-        "uid": "3546614065514066",
-        "hashtag_query": "郄鹏恩每日一题",
-        "teacher_filter": "郄鹏恩",
-        "fallback_queries": [
-            {"name": "郄鹏恩", "label": "郄鹏恩（商经知）", "query": "郄鹏恩 每日一题"},
-        ],
-    },
+# 缓存
+TOKEN_CACHE_FILE = "weibo_oauth_token.json"
+QUESTION_CACHE_FILE = "weibo_question_cache.json"
+
+# 8位老师配置（已验证的正确UID）
+TEACHERS = {
+    "行政法": {"name": "李佳", "uid": 1552849431, "screen_name": "行政法李佳", "color": "#e74c3c"},
+    "刑法":   {"name": "柏浪涛", "uid": 2523185197, "screen_name": "柏浪涛的刑法观", "color": "#e67e22"},
+    "民法":   {"name": "孟献贵", "uid": 2342740757, "screen_name": "民商法孟献贵", "color": "#2980b9"},
+    "民诉":   {"name": "戴鹏", "uid": 2758385724, "screen_name": "法律人戴鹏", "color": "#8e44ad"},
+    "刑诉":   {"name": "左宁", "uid": 3153511812, "screen_name": "左宁刑诉", "color": "#27ae60"},
+    "三国法": {"name": "杨帆", "uid": 2629450315, "screen_name": "三国法杨帆", "color": "#16a085"},
+    "理论法": {"name": "马峰", "uid": 1826780577, "screen_name": "理论法马峰", "color": "#2c3e50"},
+    "商经知": {"name": "鄢梦萱", "uid": 5568788458, "screen_name": "商经法鄢梦萱", "color": "#d35400"},
 }
 
-CACHE_FILE = "weibo_search_cache.json"
-POST_CACHE_FILE = "weibo_post_cache.json"  # 缓存已抓取的帖子内容（24小时有效）
-QUESTION_CACHE_FILE = "weibo_question_cache.json"  # 缓存每日题目帖（跨天配对答案用）
+TEACHER_UID_SET = {t["uid"] for t in TEACHERS.values()}
+TEACHER_BY_UID = {t["uid"]: t for t in TEACHERS.values()}
 
-# API频率限制: 100次/小时
-API_DELAY = 0.6
-MAX_POSTS_TO_FETCH = 4  # 每个老师初始帖子数（4×8=32次，+搜索16次=48次，留42次给深度搜索）
-MAX_DEEP_POSTS = 12  # 深度搜索：答案找不到匹配题目时翻更深（谨慎使用，避免API配额）
-API_CALL_COUNT = 0  # 全局API调用计数器
-API_LIMIT = 90  # 接近100前停止
+# friends_timeline 翻页配置
+TIMELINE_PAGES = 5
+TIMELINE_COUNT = 100  # 每页条数（OAuth2.0限制单次最多100条）
+API_DELAY = 1.0
 
 
-def track_api_call():
-    """追踪API调用次数，达到上限时抛出异常"""
-    global API_CALL_COUNT
-    API_CALL_COUNT += 1
-    if API_CALL_COUNT >= API_LIMIT:
-        raise Exception(f"API调用已达上限 {API_LIMIT}/{API_CALL_COUNT}")
+# ============ OAuth2.0 Token管理 ============
 
+def get_oauth_token():
+    """
+    获取OAuth2.0 access_token。
+    优先从环境变量，其次从缓存文件。
+    如果缓存失效，使用client_credentials无法刷新，需要手动重新授权。
+    """
+    # 优先环境变量
+    if WEIBO_ACCESS_TOKEN:
+        print("   ✅ 从环境变量加载 access_token")
+        return WEIBO_ACCESS_TOKEN
 
-def check_api_ok():
-    """检查是否还能调用API"""
-    return API_CALL_COUNT < API_LIMIT
-
-
-# ============ 微博API ============
-
-def get_weibo_token(force_refresh=False):
-    """获取微博API访问令牌（缓存避免重复请求）"""
-    if not force_refresh and os.path.exists(CACHE_FILE):
+    # 从缓存
+    if os.path.exists(TOKEN_CACHE_FILE):
         try:
-            with open(CACHE_FILE, "r") as f:
+            with open(TOKEN_CACHE_FILE, "r") as f:
                 cache = json.load(f)
             cached_at = cache.get("cached_at", 0)
-            expire_in = cache.get("expire_in", 0)
-            if time.time() - cached_at < expire_in - 3600:
-                return cache.get("token")
+            expires_in = cache.get("expires_in", 157680000)
+            if time.time() - cached_at < expires_in - 86400:
+                return cache.get("access_token")
         except Exception:
             pass
 
-    req = urllib.request.Request(
-        TOKEN_ENDPOINT,
-        data=json.dumps({
-            "app_id": WEIBO_APP_ID,
-            "app_secret": WEIBO_APP_SECRET,
-        }).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-
-    try:
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = json.loads(resp.read())
-        if data.get("code") != 0:
-            raise Exception(f"Token获取失败: {data.get('message', 'unknown')}")
-
-        token_data = data["data"]
-        token = token_data["token"]
-        expire_in = token_data.get("expire_in", 525600)
-
-        with open(CACHE_FILE, "w") as f:
-            json.dump({
-                "token": token,
-                "cached_at": time.time(),
-                "expire_in": expire_in,
-            }, f)
-
-        return token
-    except urllib.error.HTTPError as e:
-        raise Exception(f"Token HTTP错误: {e.code} {e.reason}")
-    except Exception as e:
-        raise Exception(f"Token获取异常: {e}")
+    # 缓存无效，无法自动刷新（OAuth2.0需要手动授权）
+    raise Exception("OAuth2.0 access_token 无效，需要重新手动授权获取")
 
 
-def search_zhisou(query, token, _retry=0):
-    """调用微博智搜API，返回原始数据。遇频率限制自动刷新token（最多重试2次）"""
-    MAX_RETRY = 2
-    url = f"{SEARCH_ENDPOINT}?query={urllib.parse.quote(query)}&token={token}"
-
-    try:
-        resp = urllib.request.urlopen(url, timeout=30)
-        data = json.loads(resp.read())
-        track_api_call()
-        code = data.get("code")
-
-        if code == 42900:
-            if _retry >= MAX_RETRY:
-                print(f"      ❌ Token频率限制，已重试{_retry}次，放弃")
-                return None
-            wait = 10 * (_retry + 1)
-            print(f"      ⚠️ Token频率限制，等待{wait}s后刷新重试({_retry+1}/{MAX_RETRY})...")
-            time.sleep(wait)
-            try:
-                new_token = get_weibo_token(force_refresh=True)
-                if new_token and new_token != token:
-                    return search_zhisou(query, new_token, _retry + 1)
-            except Exception as e:
-                print(f"      ❌ Token刷新失败: {e}")
-            return None
-
-        if code != 0:
-            msg = data.get("message", "")
-            print(f"      ❌ 智搜API错误 code={code} msg={msg[:80]}")
-            return None
-
-        result = data.get("data", {})
-        if result.get("noContent"):
-            print(f"      ⚪ 智搜返回 noContent=True (无相关内容)")
-            return None
-        if not result.get("completed"):
-            print(f"      ⏳ 智搜返回 completed=False (分析未完成)")
-            return None
-
-        return result
-    except urllib.error.HTTPError as e:
-        print(f"      ❌ 智搜HTTP {e.code}: {e.reason}")
-        return None
-    except Exception as e:
-        print(f"      ❌ 搜索异常: {e}")
-        return None
+def save_oauth_token(access_token, expires_in=157680000):
+    """保存access_token到缓存"""
+    with open(TOKEN_CACHE_FILE, "w") as f:
+        json.dump({
+            "access_token": access_token,
+            "cached_at": time.time(),
+            "expires_in": expires_in,
+        }, f)
 
 
-def extract_mblogids(zhisou_data):
-    """从智搜返回数据中提取所有引用的mblogid，按ID大小降序（越大越新）"""
-    mblogids = set()
-    msg = zhisou_data.get("msg", "")
-
-    # 从 wbCustomBlock 中提取 mblogid
-    for m in re.finditer(r'mblogid=(\d+)', msg):
-        mblogids.add(m.group(1))
-
-    # 也检查 scheme 字段
-    scheme = zhisou_data.get("scheme", "")
-    if scheme and 'mblogid=' in scheme:
-        mid = scheme.split('mblogid=')[1].split('&')[0]
-        mblogids.add(mid)
-
-    return sorted(mblogids, reverse=True)  # 最新的在前
-
-
-def load_post_cache():
-    """加载帖子缓存"""
-    if os.path.exists(POST_CACHE_FILE):
-        try:
-            with open(POST_CACHE_FILE, "r") as f:
-                cache = json.load(f)
-            cache_time = cache.get("cached_at", 0)
-            if time.time() - cache_time < 86400:  # 24小时有效
-                return cache.get("posts", {})
-        except Exception:
-            pass
-    return {}
-
-
-def save_post_cache(posts_dict):
-    """保存帖子缓存"""
-    with open(POST_CACHE_FILE, "w") as f:
-        json.dump({"cached_at": time.time(), "posts": posts_dict}, f, ensure_ascii=False)
-
-
-# ============ 题目缓存（跨天Q&A配对） ============
+# ============ 题目缓存 ============
 
 def load_question_cache():
-    """
-    加载题目缓存。结构: { "teacher_QNum": {
-        "q_num": 46, "text": "题目内容", "weibo_link": "...",
-        "created_at": "...", "user": "...", "cached_on": "2026-06-14"
-    }}
-    缓存保留3天，过期自动清理。
-    """
+    """加载跨天题目缓存"""
     if os.path.exists(QUESTION_CACHE_FILE):
         try:
             with open(QUESTION_CACHE_FILE, "r") as f:
                 cache = json.load(f)
-            # 清理3天前的缓存
-            cutoff = time.time() - 259200
+            # 清理7天前的
+            cutoff = time.time() - 604800
             stale = [k for k, v in cache.items() if v.get("cached_ts", 0) < cutoff]
             for k in stale:
                 del cache[k]
@@ -317,206 +118,107 @@ def load_question_cache():
 
 
 def save_question_cache(cache):
-    """保存题目缓存"""
     with open(QUESTION_CACHE_FILE, "w") as f:
         json.dump(cache, f, ensure_ascii=False)
 
 
-def find_question_in_cache(teacher_filter, q_num, cache):
-    """从缓存中查找匹配的题目"""
-    key = f"{teacher_filter}_{q_num}"
+def find_cached_question(teacher_name, q_num, cache):
+    key = f"{teacher_name}_{q_num}"
     return cache.get(key)
 
 
-def store_question_in_cache(teacher_filter, q_num, text, weibo_link, created_at, user, cache):
-    """将题目存入缓存，key={老师名}_{题号}"""
-    key = f"{teacher_filter}_{q_num}"
+def store_question_cache(teacher_name, q_num, text, weibo_link, created_at, cache):
+    key = f"{teacher_name}_{q_num}"
     cache[key] = {
         "q_num": q_num,
         "text": text,
         "weibo_link": weibo_link,
         "created_at": created_at,
-        "user": user,
         "cached_ts": time.time(),
-        "cached_on": datetime.now().strftime("%Y-%m-%d"),
     }
 
 
-def fetch_status(mblogid, token, post_cache=None, _retry=0):
-    """通过status_show API获取单条微博完整内容（支持缓存，最多重试2次）"""
-    MAX_RETRY = 2
-    
-    # 先查缓存
-    if post_cache and mblogid in post_cache:
-        return post_cache[mblogid]
-    
-    if not check_api_ok():
-        return None
+# ============ 帖子处理 ============
 
-    # === 主获取：IM API ===
-    url = f"{STATUS_API}?token={token}&id={mblogid}"
-    data = None
-    try:
-        resp = urllib.request.urlopen(url, timeout=15)
-        result = json.loads(resp.read())
-        track_api_call()
-        code = result.get("code")
-        if code == 0:
-            data = result.get("data", {})
-            # 🔑 关键修复：微博长文在 longText 字段，text 是截断版
-            long_text = data.get("longText") or ""
-            if long_text and len(long_text) > len(data.get("text", "")):
-                print(f"      📜 检测到长文，已替换截断文本 ({len(data.get('text',''))}→{len(long_text)}字)")
-                data["text"] = long_text
-            # 🔑 诊断：打印 text 字段长度
-            effective = long_text or data.get("text", "")
-            if len(effective) < 30:
-                print(f"      ⚠️ status_show text很短({len(effective)}字): {effective[:80]}")
-        else:
-            print(f"      ❌ status_show code={code} msg={result.get('message','')[:100]}")
-    except Exception as e:
-        print(f"      status_show异常 ({mblogid}): {e}")
-
-    # === Fallback: m.weibo.cn 移动端API（无需鉴权，补充图片URL）===
-    if data is not None:
-        # 检查是否已有图片信息
-        has_pics = bool(data.get("pics") or data.get("pic_urls") or data.get("pic_ids"))
-        if not has_pics:
-            try:
-                m_url = f"https://m.weibo.cn/statuses/show?id={mblogid}"
-                m_req = urllib.request.Request(
-                    m_url,
-                    headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"}
-                )
-                m_resp = urllib.request.urlopen(m_req, timeout=10)
-                m_json = json.loads(m_resp.read().decode("utf-8"))
-                m_data = m_json.get("data") or m_json.get("status")
-                if m_data:
-                    # 提取图片URL并合并到data
-                    pics = m_data.get("pics") or []
-                    if pics:
-                        data["pics"] = pics
-                        print(f"      📷 m.weibo.cn补充了{len(pics)}张图片")
-                    pic_ids = m_data.get("pic_ids") or []
-                    if pic_ids:
-                        data["pic_ids"] = pic_ids
-            except Exception as e2:
-                # 移动端API失败不影响主流程
-                pass
-
-        # 写入缓存
-        if post_cache is not None:
-            post_cache[mblogid] = data
-        return data
-
-    # IM API 失败，走重试逻辑
-    if result and result.get("code") == 42900:
-        # ... existing retry logic ...
-        pass
-
+def extract_q_num(text):
+    """从帖子文本提取题号"""
+    # 模式1: 每日一题XX
+    m = re.search(r'每日一题[^\d]*(\d+)', text)
+    if m:
+        return int(m.group(1))
+    # 模式2: 纯数字标题（柏浪涛模式: "90.xxx"）
+    m = re.search(r'^(\d{1,3})[\.\、\s]', text.strip())
+    if m:
+        num = int(m.group(1))
+        if 1 <= num <= 999:
+            return num
+    # 模式3: 第X题
+    m = re.search(r'第\s*(\d+)\s*题', text)
+    if m:
+        return int(m.group(1))
     return None
 
 
-def fetch_teacher_timeline(uid, token, post_cache=None, max_count=10):
+def classify_post(post_data):
     """
-    通过 user_timeline API 直接拉取老师最近帖子（不依赖智搜）。
-    返回: [(mblogid, text, created_at, user_screen_name), ...] 按时间倒序
-    """
-    if not check_api_ok():
-        return []
+    分类帖子类型。
+    返回: ("question"|"answer"|"collection"|"other", q_num)
 
-    url = f"{USER_TIMELINE_API}?token={token}&uid={uid}&count={max_count}"
-    try:
-        resp = urllib.request.urlopen(url, timeout=15)
-        result = json.loads(resp.read())
-        track_api_call()
-        code = result.get("code")
-        if code != 0:
-            print(f"      ❌ timeline API 错误 code={code} msg={result.get('message','')[:100]}")
-            print(f"         完整响应: {json.dumps(result, ensure_ascii=False)[:300]}")
-            return []
-        posts = result.get("data", {}).get("statuses", [])
-        print(f"      📜 timeline 拉到 {len(posts)} 条帖子")
-        results = []
-        for p in posts:
-            mid = str(p.get("mid") or p.get("id") or "")
-            text = p.get("longText") or p.get("text", "")
-            created = p.get("created_at", "")
-            user = p.get("user", {}).get("screen_name", "")
-            results.append((mid, text, created, user))
-            # 同时写入 post_cache
-            if post_cache is not None and mid:
-                p["text"] = text  # 确保用 longText 覆盖
-                post_cache[mid] = p
-        return results
-    except Exception as e:
-        print(f"      timeline 异常: {e}")
-        return []
-
-
-# ============ 帖子分类与内容提取 ============
-
-def classify_post(post_data, teacher_filter=""):
-    """
-    分类帖子类型，同时标注是否为第三方
-    返回: (post_type, question_number, is_third_party)
-        post_type: "question"|"answer"|"collection"|"other"
+    识别策略：
+    1. 包含"每日一题" + "答案" → answer
+    2. 包含"每日一题" + 不含"答案" → question
+    3. 纯题号格式（如"90.xxx"）+ 包含ABCD选项 → question
+    4. 纯题号格式 + 无选项（可能被截断）→ 仍判定为question（法考题帖格式）
+    5. 纯题号格式 + 含"答案"/"解析" → answer
     """
     text = post_data.get("text", "")
-    user = post_data.get("user", {}).get("screen_name", "")
 
-    # 提取题号
-    q_num = None
-    num_match = re.search(r'每日一题[^\d]*(\d+)', text)
-    if num_match:
-        q_num = int(num_match.group(1))
+    q_num = extract_q_num(text)
 
-    # 判断是否为第三方（非老师本人）
-    is_third_party = bool(teacher_filter) and teacher_filter not in user
+    has_daily = "每日一题" in text
+    has_options = bool(re.search(r'[A-D][\.\、）\)]', text))
+    has_answer_kw = "答案" in text or "解析" in text
+    is_collection = any(kw in text for kw in ["笔记", "整理", "汇总", "PDF", "合集"])
 
-    # 判断类型
-    has_daily = '每日一题' in text
-    is_answer = ('答案' in text) and has_daily
-    is_collection = any(kw in text for kw in ['笔记', '整理', '汇总', '资料汇总', 'PDF', '合集'])
+    if is_collection:
+        return ("collection", q_num)
 
-    if is_answer:
-        return ("answer", q_num, is_third_party)
-    elif has_daily and ('答案' not in text) and ('解析' not in text):
-        if is_collection:
-            return ("collection", q_num, is_third_party)
-        return ("question", q_num, is_third_party)
-    elif is_collection:
-        return ("collection", q_num, is_third_party)
-    else:
-        return ("other", q_num, is_third_party)
+    if has_daily:
+        if has_answer_kw:
+            return ("answer", q_num)
+        else:
+            return ("question", q_num)
+
+    # 无"每日一题"但有题号：纯题号格式（柏浪涛/左宁模式）
+    if q_num:
+        if has_answer_kw:
+            return ("answer", q_num)
+        # 有选项或题号>=10（前几位老师通常10题起）→ 视为题目
+        if has_options or q_num >= 10:
+            return ("question", q_num)
+
+    return ("other", q_num)
 
 
-def clean_post_text(text):
-    """清洗微博帖子文本"""
+def clean_text(text):
+    """清洗微博文本"""
     if not text:
         return ""
-
-    # 去除URL
     text = re.sub(r'https?://\S+', '', text)
-    # 去除hashtag（保留内容）
     text = re.sub(r'#([^#]+)#', r'\1', text)
-    # 去除@提及
     text = re.sub(r'@\S+', '', text)
-    # 清理多余空白
     text = re.sub(r'\n{3,}', '\n\n', text)
-    text = text.strip()
-
-    return text
+    return text.strip()
 
 
-def format_question_html(question_text, q_num=None):
-    """将题目文本格式化为HTML"""
-    text = clean_post_text(question_text)
+def format_html(text):
+    """文本转HTML"""
+    text = clean_text(text)
 
-    # Markdown粗体 → HTML
+    # Markdown粗体
     text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
 
-    # 高亮法律术语（在非标签文本中）
+    # 法条引用高亮
     def bold_law(txt):
         parts = re.split(r'(<[^>]+>)', txt)
         result = []
@@ -524,21 +226,9 @@ def format_question_html(question_text, q_num=None):
             if part.startswith('<') and part.endswith('>'):
                 result.append(part)
             else:
-                # 法条引用
-                part = re.sub(
-                    r'(《[^》]+》(?:第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)?)',
-                    r'<strong class="law">\1</strong>', part
-                )
-                # 法条号
-                part = re.sub(
-                    r'(?<!\w)(第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)',
-                    r'<strong class="law">\1</strong>', part
-                )
-                # 金额
-                part = re.sub(
-                    r'(\d+(?:\.\d+)?\s*(?:万元?|元)(?!\w))',
-                    r'<strong class="num">\1</strong>', part
-                )
+                part = re.sub(r'(《[^》]+》(?:第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)?)', r'<strong class="law">\1</strong>', part)
+                part = re.sub(r'(?<!\w)(第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)', r'<strong class="law">\1</strong>', part)
+                part = re.sub(r'(\d+(?:\.\d+)?\s*(?:万元?|元)(?!\w))', r'<strong class="num">\1</strong>', part)
             result.append(part)
         return ''.join(result)
 
@@ -557,735 +247,177 @@ def format_question_html(question_text, q_num=None):
 
     text = escape_safe(text)
     text = text.replace('\n', '<br>')
-
     return text
 
 
-def format_answer_html(answer_text):
-    """将答案文本格式化为HTML"""
-    return format_question_html(answer_text)  # 复用同样的格式化逻辑
+# ============ 核心抓取逻辑 ============
 
-
-def resolve_short_url(short_url):
-    """解析微博短链接，返回真实URL"""
+def fetch_full_post(token, mid):
+    """
+    获取单条微博完整内容。
+    先尝试 statuses/show（仅对互关用户有效），
+    失败则用 m.weibo.cn 移动端API（公开接口，无需鉴权）。
+    """
+    # 方式1: OAuth2.0 statuses/show
+    url = f"{STATUS_SHOW_URL}?access_token={token}&id={mid}"
     try:
-        req = urllib.request.Request(
-            short_url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; FakaoBot/1.0)"}
-        )
-        # 禁止自动跟随重定向，拿到 Location 头
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
-        # 手动处理：先发 HEAD 请求拿 Location
-        import http.client
-        # 简单方案：用 urllib 正常打开，捕获重定向后的 URL
-        resp = urllib.request.urlopen(
-            urllib.request.Request(
-                short_url,
-                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
-            ),
-            timeout=10
-        )
-        return resp.geturl()
-    except Exception as e:
-        return None
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if "error_code" not in data:
+            return data.get("text", "")
+    except Exception:
+        pass
 
-
-def extract_image_urls_from_post(post_data):
-    """
-    从帖子数据中提取图片URL（兼容多种字段名+短链接解析）
-    返回: 图片URL列表
-    """
-    urls = []
-
-    # 方式1: pic_urls（标准Open API字段）
-    pic_urls = post_data.get("pic_urls") or []
-    for p in pic_urls:
-        if isinstance(p, dict):
-            # large 可能是 dict{"url": "..."} 或直接的URL字符串
-            large_val = p.get("large")
-            if isinstance(large_val, dict):
-                url = large_val.get("url", "")
-            elif isinstance(large_val, str):
-                url = large_val
-            else:
-                url = (p.get("thumbnail_pic") or p.get("bmiddle_pic")
-                         or p.get("original_pic") or "")
-            if url and isinstance(url, str):
-                urls.append(url)
-        elif isinstance(p, str) and p.startswith("http"):
-            urls.append(p)
-
-    # 方式2: pics（旧版字段，注意 large 可能是 dict）
-    pics = post_data.get("pics") or []
-    for p in pics:
-        if isinstance(p, dict):
-            large_val = p.get("large")
-            if isinstance(large_val, dict):
-                url = large_val.get("url", "")
-            elif isinstance(large_val, str):
-                url = large_val
-            else:
-                url = p.get("url") or ""
-            if url and isinstance(url, str):
-                urls.append(url)
-        elif isinstance(p, str) and p.startswith("http"):
-            urls.append(p)
-
-    # 方式3: pic_ids → 拼接微博图片URL
-    pic_ids = post_data.get("pic_ids") or []
-    for pid in pic_ids:
-        if pid:
-            urls.append(f"https://wx1.sinaimg.cn/large/{pid}.jpg")
-
-    # 方式4: 从正文提取 t.cn 短链接并解析
-    text = post_data.get("text", "")
-    for m in re.finditer(r'https?://t\.cn/(\S+)', text):
-        short = m.group(0).rstrip(")").rstrip("】").rstrip("】")
-        real = resolve_short_url(short)
-        if real and any(ext in real.lower() for ext in [".jpg", ".png", ".jpeg", ".gif", ".webp"]):
-            urls.append(real)
-        elif real and "sinaimg" in real:
-            urls.append(real)
-
-    return list(dict.fromkeys(urls))  # 去重保序
-
-
-# ============ OCR 图片文字识别 ============
-
-def ocr_image(image_url):
-    """下载图片并OCR识别文字，返回识别的文本"""
-    if not HAS_OCR:
-        return None
-
+    # 方式2: m.weibo.cn 移动端公开API
     try:
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-            req = urllib.request.Request(image_url, headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; FakaoBot/1.0)',
-                'Referer': 'https://weibo.com/',
-            })
-            resp = urllib.request.urlopen(req, timeout=15)
-            tmp.write(resp.read())
-            tmp_path = tmp.name
-
-        img = Image.open(tmp_path)
-        # 可选：转灰度提升OCR准确率
-        img = img.convert("L").convert("RGB")
-        text = pytesseract.image_to_string(img, lang='chi_sim+eng')
-        os.unlink(tmp_path)
-        return text.strip()
-    except Exception as e:
-        print(f"         OCR异常: {e}")
-        return None
-
-
-def try_extract_question_from_post(post_data):
-    """
-    尝试从帖子中提取题目文字和图片URL。
-    优先使用帖子正文，如果正文太短且帖子有图片，记录图片URL备用。
-    返回: (question_text, image_urls)
-    """
-    text = post_data.get("text", "").strip()
-    image_urls = extract_image_urls_from_post(post_data)
-
-    # 如果正文足够长（>30字），直接用正文
-    if len(text) > 30:
-        return (text, image_urls)
-
-    # 正文太短，但有图片：返回短文本+图片URL（邮件里会嵌入图片）
-    if image_urls:
-        print(f"         正文较短({len(text)}字)，将有{len(image_urls)}张图片嵌入邮件")
-        return (text, image_urls)
-
-    return (text, [])
-
-
-def detect_embedded_question(post_text, answer_q_num):
-    """
-    检测答案帖中是否嵌入了下一题的题目（李佳模式：同一帖=昨天答案视频+今天新题文字）。
-    尝试从答案帖文本中提取嵌入的新题目。
-    返回: (new_q_num, question_text) 或 (None, "")
-    """
-    if not post_text or len(post_text) < 80:
-        return (None, "")
-    
-    # 查找所有"第X题"引用
-    all_q_nums = []
-    for m in re.finditer(r'第\s*(\d+)\s*题', post_text):
-        all_q_nums.append(int(m.group(1)))
-    
-    if len(all_q_nums) < 2:
-        return (None, "")
-    
-    # 找到最大的题号（新题）
-    new_q_num = max(all_q_nums)
-    if new_q_num == answer_q_num:
-        return (None, "")
-    
-    # 提取新题附近的文本：从"第N题"到下一个标记或文末
-    pattern = rf'第\s*{new_q_num}\s*题[：:\s]*(.*?)(?=\n\n|第\s*\d+\s*题|【|#{1,2}|$)'
-    m = re.search(pattern, post_text, re.DOTALL)
-    if m:
-        extracted = m.group(1).strip()
-        # 必须包含选项才认为是完整题目
-        if len(extracted) > 40 and re.search(r'[A-D][\.\、）\)]', extracted):
-            return (new_q_num, f"第{new_q_num}题：{extracted}")
-        elif len(extracted) > 20:
-            return (new_q_num, f"第{new_q_num}题：{extracted}")
-    
-    return (None, "")
-
-
-def detect_embedded_question(post_text, answer_q_num):
-    """
-    检测答案帖中是否嵌入了下一题的题目（李佳模式：同一帖=昨天答案视频+今天新题文字）。
-    尝试从答案帖文本中提取嵌入的新题目。
-    返回: (new_q_num, question_text) 或 (None, "")
-    """
-    if not post_text or len(post_text) < 80:
-        return (None, "")
-    
-    # 查找所有"第X题"引用
-    all_q_nums = []
-    for m in re.finditer(r'第\s*(\d+)\s*题', post_text):
-        all_q_nums.append(int(m.group(1)))
-    
-    if len(all_q_nums) < 2:
-        return (None, "")
-    
-    # 找到最大的题号（新题）
-    new_q_num = max(all_q_nums)
-    if new_q_num == answer_q_num:
-        return (None, "")
-    
-    # 提取新题附近的文本：从"第N题"到下一个标记或文末
-    pattern = rf'第\s*{new_q_num}\s*题[：:\s]*(.*?)(?=\n\n|第\s*\d+\s*题|【|#{1,2}|$)'
-    m = re.search(pattern, post_text, re.DOTALL)
-    if m:
-        extracted = m.group(1).strip()
-        # 必须包含选项才认为是完整题目
-        if len(extracted) > 40 and re.search(r'[A-D][\.\、）\)]', extracted):
-            return (new_q_num, f"第{new_q_num}题：{extracted}")
-        elif len(extracted) > 20:
-            return (new_q_num, f"第{new_q_num}题：{extracted}")
-    
-    return (None, "")
-
-
-# ============ 从答案帖提取题目（fallback） ============
-
-def try_extract_question_from_answer(answer_text):
-    """
-    从答案帖/视频帖的文本中尝试提取题目描述。
-    策略：题目标记→解析前文案→分段首段→整体裁剪。
-    返回: 提取的题目文本，或空字符串
-    """
-    if not answer_text or len(answer_text) < 15:
-        return ""
-    
-    # 方式1: 匹配常见题目标记段落
-    for pattern in [
-        r'【题目】(.*?)(?:【|$)', r'【题干】(.*?)(?:【|$)',
-        r'题目[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)', 
-        r'题干[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
-        r'案例[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
-        r'原题[：:]\s*(.*?)(?:\n|解析|答案|【|#|$)',
-    ]:
-        m = re.search(pattern, answer_text, re.DOTALL)
-        if m:
-            extracted = m.group(1).strip()
-            if len(extracted) > 15:
-                return extracted[:500]
-
-    # 方式2: 找"解析"关键词，往前取题目
-    idx_analysis = answer_text.find('解析')
-    if idx_analysis > 30:
-        prefix = answer_text[:idx_analysis].strip()
-        # 分行处理，取最长的非标签行
-        lines = prefix.split('\n')
-        best_line = ""
-        for line in lines:
-            line = line.strip()
-            if len(line) > 20 and not line.startswith('#') and not line.startswith('@'):
-                if len(line) > len(best_line):
-                    best_line = line
-        if best_line:
-            return best_line[:500]
-    
-    # 方式3: 去掉标签后的第一段有意义文本
-    cleaned = re.sub(r'#\S+#\s*', '', answer_text)
-    cleaned = re.sub(r'@\S+\s*', '', cleaned)
-    cleaned = re.sub(r'http\S+', '', cleaned)
-    cleaned = cleaned.strip()
-    if len(cleaned) > 20:
-        # 取前200字作为题目描述
-        return cleaned[:300] + ("..." if len(cleaned) > 300 else "")
-    
-    return ""
-
-
-# ============ 两阶段抓取 ============
-
-def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=None, uid=None):
-    """
-    一级抓取：通过hashtag搜索获取真实帖子，配对Q&A。
-    
-    老师更新逻辑：今天发新题目(Q_new) + 昨天题目的答案(A_old)
-    所以需要跨天配对：今天的答案A_N，对应昨天缓存的题目Q_N
-    
-    返回: {
-        "question_text": str,   # 题目内容（从缓存或当天帖子）
-        "answer_text": str,     # 答案内容
-        "question_link": str,   # 题目微博链接
-        "answer_link": str,     # 答案微博链接
-        "source_label": str,    # 来源标注 e.g. "Q46✅完整"
-        "q_num": int,           # 题号
-        "is_complete": bool,    # 是否题目+答案完整配对
-    } 或 None
-    """
-    if question_cache is None:
-        question_cache = {}
-
-    # ===================================================================
-    # Step 0（新）: 优先用 timeline API 直接拉老师最近帖子
-    # ===================================================================
-    own_posts = []   # [(mid, text, created_at, user_screen_name)]
-    if uid:
-        print(f"      📜 尝试 timeline API (UID={uid})...")
-        own_posts = fetch_teacher_timeline(uid, token,
-                                           post_cache=load_post_cache() if not post_cache else post_cache)
-        # 只保留含"每日一题"的帖子
-        daily_posts = [p for p in own_posts if '每日一题' in (p[1] or '')]
-        if daily_posts:
-            print(f"      ✅ timeline 命中 {len(daily_posts)} 条含「每日一题」的帖子")
-        else:
-            print(f"      ⚠️  timeline 未含「每日一题」，将走智搜 fallback")
-    else:
-        print(f"      ⚠️  未配置 UID，跳过 timeline，直走智搜")
-
-    # 把 timeline 拿到的帖子注入 questions/answers（复用后续配对逻辑）
-    # 先加载 post_cache 供 fetch_status 使用
-    post_cache = load_post_cache() if not post_cache else post_cache
-    questions = []
-    answers = []
-
-    if own_posts:
-        # 直接用 timeline 拿到的帖子，不再调 fetch_status（已缓存在 post_cache）
-        for (mid, text, created, user) in own_posts:
-            if not check_api_ok():
-                break
-            # 构造伪 post_data 供 classify_post 使用
-            post_data = post_cache.get(mid) or {"text": text, "user": {"screen_name": user}, "created_at": created}
-            post_type, q_num, is_third = classify_post(post_data, teacher_filter)
-            if post_type == "question":
-                q_text, image_urls = try_extract_question_from_post(post_data)
-                if image_urls:
-                    img_tags = "<div style=\"margin:10px 0\">" + "".join(
-                        f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
-                        for u in image_urls[:3]
-                    ) + "</div>"
-                    q_text = img_tags + "<br>" + (q_text or "")
-                questions.append((mid, q_num, q_text or text, created, user, is_third))
-                print(f"         🎯 [timeline]题目帖 Q{q_num} | {user}")
-                if q_num is not None:
-                    weibo_link = f"https://weibo.com/detail/{mid}"
-                    store_question_in_cache(teacher_filter, q_num, q_text or text, weibo_link, created, user, question_cache)
-            elif post_type == "answer":
-                answers.append((mid, q_num, text, created, user, is_third))
-                print(f"         ✅ [timeline]答案帖 Q{q_num} | {user}")
-            time.sleep(API_DELAY)
-
-    # ===================================================================
-    # Step 1（旧）: 智搜 hashtag 搜索，作为 fallback
-    # ===================================================================
-    if not questions and not answers:
-        print(f"      🔍 智搜 hashtag='{hashtag_query}'...")
-        data = search_zhisou(hashtag_query, token)
-        if not data:
-            return None
-        mblogids = extract_mblogids(data)
-        if not mblogids:
-            return None
-
-        # 合并 fallback 查询的 mblogid
-        if check_api_ok():
-            fb_query = f"{teacher_filter} 每日一题"
-            fb_data = search_zhisou(fb_query, token)
-            if fb_data:
-                fb_ids = extract_mblogids(fb_data)
-                mblogids = sorted(set(mblogids + fb_ids), reverse=True)
-                print(f"      hashtag+fallback合并: {len(set(mblogids))} 个唯一引用帖")
-
-        fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
-        print(f"      检查最近 {fetch_n} 个帖子...")
-
-        for mid in mblogids[:fetch_n]:
-            if not check_api_ok():
-                print(f"      ⚠️ API调用接近上限({API_CALL_COUNT}/{API_LIMIT})，停止抓取")
-                break
-            post = fetch_status(mid, token, post_cache)
-            if not post:
-                continue
-            post_type, q_num, is_third = classify_post(post, teacher_filter)
-            text = post.get("text", "")
-            created = post.get("created_at", "")
-            user = post.get("user", {}).get("screen_name", "")
-            if post_type == "question":
-                q_extracted, image_urls = try_extract_question_from_post(post)
-                if image_urls:
-                    img_tags = "<div style=\"margin:10px 0\">" + "".join(
-                        f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
-                        for u in image_urls[:3]
-                    ) + "</div>"
-                    q_extracted = img_tags + "<br>" + (q_extracted or "")
-                questions.append((mid, q_num, q_extracted or text, created, user, is_third))
-                img_tag = " 📷" if image_urls else ""
-                third_tag = "📎三方" if is_third else "👤本人"
-                print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{img_tag} | {created}")
-                if q_num is not None:
-                    weibo_link = f"https://weibo.com/detail/{mid}"
-                    store_question_in_cache(teacher_filter, q_num, q_extracted or text, weibo_link, created, user, question_cache)
-            elif post_type == "answer":
-                answers.append((mid, q_num, text, created, user, is_third))
-                third_tag = "📎三方" if is_third else "👤本人"
-                print(f"         ✅ 答案帖 Q{q_num} | {user} {third_tag} | {created}")
-                if not is_third and q_num is not None:
-                    emb_q_num, emb_q_text = detect_embedded_question(text, q_num)
-                    if emb_q_num and emb_q_text:
-                        questions.append((mid, emb_q_num, emb_q_text, created, user, False))
-                        print(f"         🔀 从答案帖中检出嵌入新题 Q{emb_q_num} ({len(emb_q_text)}字)")
-                        weibo_link = f"https://weibo.com/detail/{mid}"
-                        store_question_in_cache(teacher_filter, emb_q_num, emb_q_text, weibo_link, created, user, question_cache)
-            elif post_type == "collection":
-                print(f"         📦 合集帖 | {user} | {created}")
-            time.sleep(API_DELAY)
-    else:
-        print(f"      ✅ timeline 数据已加载，跳过智搜")
-
-    # 保存帖子缓存
-    save_post_cache(post_cache)
-    # 保存题目缓存（跨天生效）
-    save_question_cache(question_cache)
-
-    # Step 3: 配对Q&A —— 核心逻辑
-    # 🔥 只使用老师本人帖子，第三方内容不做主源
-    own_answers = [a for a in answers if not a[5]]
-    own_questions = [q for q in questions if not q[5]]
-
-    # ============ 🆕 跨号配对模式 ============
-    # 老师同一天发：昨天答案(Q_N, 视频) + 今天新题(Q_M, 文字), N ≠ M
-    # 例：李佳 今天发 Q46答案(视频) + Q47题目(文字)
-    # 此时应以新题目为主，答案标注为视频链接
-    if own_answers and own_questions:
-        a_best = own_answers[0]
-        q_best = own_questions[0]
-        a_mid, a_num, a_text, a_created, a_user, a_third = a_best
-        q_mid, q_num, q_text, q_created, q_user, q_third = q_best
-
-        if a_num is not None and q_num is not None and a_num != q_num:
-            # 跨号配对！
-            answer_link = f"https://weibo.com/detail/{a_mid}"
-            question_link = f"https://weibo.com/detail/{q_mid}"
-
-            # 答案帖：检测是否为视频
-            if len(a_text.strip()) < 30:
-                answer_text = f"📹 第{a_num}题答案解析为视频，点击链接查看"
-            else:
-                answer_text = a_text
-
-            # 存入题目缓存供明天配对
-            store_question_in_cache(teacher_filter, q_num, q_text, question_link, q_created, q_user, question_cache)
-            # 答案帖也缓存（视频帖文本短但有题号）
-            if a_num is not None:
-                store_question_in_cache(teacher_filter, a_num, a_text, answer_link, a_created, a_user, question_cache)
-            save_post_cache(post_cache)
-            save_question_cache(question_cache)
-
-            source_label = f"Q{q_num} 🆕新题 | Q{a_num}答案📹视频"
-            print(f"      🔀 跨号配对: 新题Q{q_num}({len(q_text)}字) + 答案Q{a_num}视频")
-
-            return {
-                "question_text": q_text,
-                "answer_text": answer_text,
-                "question_link": question_link,
-                "answer_link": answer_link,
-                "source_label": source_label,
-                "q_num": q_num,
-                "is_complete": True,
-            }
-
-    # ============ 标准配对模式（同号Q&A或仅答案/仅题目） ============
-    if not own_answers:
-        # 没有老师的答案帖
-        if own_questions:
-            # 有老师的题目帖 → 返回新题目（等明天的答案）
-            q = own_questions[0]
-            q_mid, q_num, q_text, q_created, q_user, q_third = q
-            weibo_link = f"https://weibo.com/detail/{q_mid}"
-            # 存入缓存
-            store_question_in_cache(teacher_filter, q_num, q_text, weibo_link, q_created, q_user, question_cache)
-            save_post_cache(post_cache)
-            save_question_cache(question_cache)
-            return {
-                "question_text": q_text,
-                "answer_text": f"📌 今日新题，答案将于明日公布",
-                "question_link": weibo_link,
-                "answer_link": "",
-                "source_label": f"Q{q_num} 🆕新题" if q_num else f"题目帖(@{q_user})",
-                "q_num": q_num,
-                "is_complete": False,
-            }
-        # 没有老师本人的任何帖子 → 返回None，由上层触发AI fallback
-        print(f"      ⚠️ 未找到{teacher_filter}本人帖子，将触发AI摘要兜底")
-        return None
-
-    # 从本人答案帖出发，找匹配题目（同号配对）
-    all_answers = own_answers
-    best_answer = all_answers[0]
-    a_mid, a_num, a_text, a_created, a_user, a_third = best_answer
-    answer_link = f"https://weibo.com/detail/{a_mid}"
-
-    # 查找匹配题目：优先缓存，其次当天帖子
-    question_text = ""
-    question_link = ""
-    q_source = ""  # "cache" | "current" | "deep" | "fullscan" | "answer_extract" | ""(not found)
-    deep_n = min(MAX_DEEP_POSTS, len(mblogids))  # 预计算深度搜索范围
-
-    if a_num is not None:
-        # 🔥 关键：先查题目缓存（昨天的题目）
-        cached_q = find_question_in_cache(teacher_filter, a_num, question_cache)
-        if cached_q:
-            question_text = cached_q.get("text", "")
-            question_link = cached_q.get("weibo_link", "")
-            q_source = "cache"
-            print(f"      📦 缓存命中: Q{a_num}题目（{cached_q.get('cached_on','?')}存入）")
-
-        # 缓存没命中，查当天帖子中是否有同号题目
-        if not question_text:
-            matching_qs = [q for q in questions if q[1] == a_num]
-            if matching_qs:
-                # 优先本人
-                own_match = [q for q in matching_qs if not q[5]]
-                q = own_match[0] if own_match else matching_qs[0]
-                question_text = q[2]
-                question_link = f"https://weibo.com/detail/{q[0]}"
-                q_source = "current"
-                print(f"      📄 当天命中: Q{a_num}题目")
-
-        # 还是没有 → 更深搜索（同时填充缓存）
-        if not question_text and len(mblogids) > fetch_n and check_api_ok():
-            print(f"      🔍 缓存未命中，深度搜索({fetch_n+1}~{deep_n})找Q{a_num}题目...")
-            for mid in mblogids[fetch_n:deep_n]:
-                if not check_api_ok():
-                    break
-                post = fetch_status(mid, token, post_cache)
-                if not post:
-                    continue
-                ptype, pq_num, pthird = classify_post(post, teacher_filter)
-                if ptype == "question" and pq_num is not None:
-                    extracted, _ = try_extract_question_from_post(post)
-                    # 存入缓存（无论题号是否匹配，供后续使用）
-                    if not find_question_in_cache(teacher_filter, pq_num, question_cache):
-                        created = post.get("created_at", "")
-                        user = post.get("user", {}).get("screen_name", "")
-                        weibo_link = f"https://weibo.com/detail/{mid}"
-                        store_question_in_cache(teacher_filter, pq_num, extracted, weibo_link, created, user, question_cache)
-                    # 检查是否命中目标
-                    if pq_num == a_num and not question_text:
-                        question_text = extracted
-                        question_link = f"https://weibo.com/detail/{mid}"
-                        q_source = "deep"
-                        print(f"      🎯 深度命中: Q{a_num}题目")
-                elif ptype == "answer" and pq_num is not None:
-                    # 答案帖也值得记录（提取题目用）
-                    pass
-                time.sleep(API_DELAY / 2)  # 深度搜索减半延迟
-
-    # 处理答案帖太短的情况（视频解析）
-    if len(a_text.strip()) < 30:
-        a_text = f"📹 本题解析为视频形式，请点击下方链接查看完整讲解"
-
-    # 如果题目仍未找到，尝试从答案帖本身提取题目描述
-    if not question_text:
-        extracted_q = try_extract_question_from_answer(a_text)
-        if extracted_q:
-            question_text = extracted_q
-            q_source = "answer_extract"
-            print(f"      📝 从答案帖提取题目 ({len(extracted_q)}字)")
-            # 存入缓存供后续使用
-            if a_num is not None:
-                store_question_in_cache(teacher_filter, a_num, extracted_q, answer_link, a_created, a_user, question_cache)
-
-    # 🔥 持久化题目缓存（深度搜索+答案提取的结果也写入磁盘）
-    if question_cache:
-        save_question_cache(question_cache)
-    # 最后的兜底
-    if not question_text:
-        question_text = f"📌 {teacher_filter}每日一题" + (f" 第{a_num}题" if a_num else "")
-        question_link = ""
-
-
-    # 构建来源标注
-    if a_num:
-        if q_source:
-            source_label = f"Q{a_num} ✅完整({q_source})"
-        else:
-            source_label = f"Q{a_num} ⚠️缺题目"
-    else:
-        source_label = f"@{a_user}"
-    if a_third:
-        source_label += "(三方)"
-
-    return {
-        "question_text": question_text,
-        "answer_text": a_text,
-        "question_link": question_link,
-        "answer_link": answer_link,
-        "source_label": source_label,
-        "q_num": a_num,
-        "is_complete": bool(q_source),
-    }
-
-
-def fetch_teacher_fallback(fallback_queries, token):
-    """
-    二级抓取（fallback）：通过智搜AI摘要获取内容
-    保留旧版逻辑用于没有真实帖子的替代名师
-    返回: (source_label, question_html, answer_html, weibo_link, is_alternative)
-    """
-    for i, q in enumerate(fallback_queries):
-        label = q["label"]
-        is_alt = i > 0
-
-        data = search_zhisou(q["query"], token)
-        if data and not data.get("noContent"):
-            raw_msg = data.get("msg", "")
-            if len(raw_msg) > 50:
-                # 复用旧的format逻辑
-                cleaned = clean_zhisou_markdown(raw_msg)
-                question_html, answer_html = format_zhisou_qa(cleaned)
-                scheme = data.get("scheme", "")
-                weibo_link = scheme.replace("sinaweibo://", "https://weibo.com/") if scheme else ""
-                return (label, question_html, answer_html, weibo_link, is_alt)
+        m_url = f"https://m.weibo.cn/statuses/show?id={mid}"
+        m_req = urllib.request.Request(
+            m_url,
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"}
+        )
+        with urllib.request.urlopen(m_req, timeout=10) as m_resp:
+            m_json = json.loads(m_resp.read().decode("utf-8"))
+        m_data = m_json.get("data") or m_json.get("status") or {}
+        if m_data:
+            return m_data.get("text", "")
+    except Exception:
+        pass
 
     return None
 
 
-# ============ 旧版兼容：智搜AI摘要清洗（用于fallback） ============
+def fetch_all_teacher_posts(token):
+    """
+    通过 friends_timeline 翻页获取所有关注人帖子，筛选8位老师。
+    对截断的长文帖子（含"全文"链接），调用statuses/show获取完整内容。
+    返回: {teacher_name: [(mid, text, created_at, q_num, post_type), ...]}
+    """
+    teacher_posts = {t["name"]: [] for t in TEACHERS.values()}
 
-def clean_zhisou_markdown(raw_msg):
-    """清洗智搜markdown"""
-    if not raw_msg:
-        return ""
-    text = raw_msg
-    text = re.sub(r'```wbCustomBlock\{[^}]*\}\s*[\s\S]*?```', '', text)
-    text = re.sub(r'wbCustomBlock\{[^}]*\}', '', text)
-    text = re.sub(r'<media-block>[\s\S]*?</media-block>', '', text)
-    text = re.sub(r'```(?:plaintext|text|markdown|md)?\s*\n?', '', text)
-    text = re.sub(r'```', '', text)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
+    max_id = None
+    for page in range(TIMELINE_PAGES):
+        url = f"{FRIENDS_TIMELINE_URL}?access_token={token}&count={TIMELINE_COUNT}"
+        if max_id:
+            url += f"&max_id={max_id}"
 
-
-def format_zhisou_qa(raw_text, max_len=1200):
-    """旧的Q&A分离逻辑（用于fallback）"""
-    text = raw_text.strip()
-    if not text:
-        return "", ""
-
-    # Markdown → HTML
-    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-
-    # 高亮
-    def bold_outside_tags(txt, pattern, template):
-        parts = re.split(r'(<[^>]+>)', txt)
-        result = []
-        for part in parts:
-            if part.startswith('<') and part.endswith('>'):
-                result.append(part)
-            else:
-                result.append(re.sub(pattern, template, part))
-        return ''.join(result)
-
-    text = bold_outside_tags(text, r'(《[^》]+》(?:第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)?)', r'<strong class="law">\1</strong>')
-    text = bold_outside_tags(text, r'(?<!\w)(第[一二三四五六七八九十百千\d]+条(?:之[一二三])?)', r'<strong class="law">\1</strong>')
-    text = bold_outside_tags(text, r'(\d+(?:\.\d+)?\s*(?:万元?|元)(?!\w))', r'<strong class="num">\1</strong>')
-
-    # 找分隔点
-    split_pos = None
-    for pattern_str in [
-        r'以第[一二三四五六七八九十百千\d]+题为例',
-        r'(?<=\n)(?:###?\s*)?(?:答案|解析|【答案】|【解析】)',
-    ]:
-        m = re.search(pattern_str, text)
-        if m and m.start() > 60:
-            split_pos = m.start()
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            print(f"   ⚠️ friends_timeline 第{page+1}页失败: {e}")
             break
 
-    if split_pos is None:
-        paragraphs = re.split(r'\n{2,}', text)
-        cum_len = 0
-        for i, p in enumerate(paragraphs):
-            cum_len += len(p)
-            if cum_len > 200 and i >= 1:
-                split_pos = len('\n\n'.join(paragraphs[:i+1]))
-                break
+        posts = data.get("statuses", [])
+        if not posts:
+            break
 
-    if split_pos and split_pos > 60:
-        q = text[:split_pos].strip()
-        a = text[split_pos:].strip()
-    else:
-        q = text
-        a = ""
+        for p in posts:
+            uid = p.get("user", {}).get("id")
+            if uid not in TEACHER_UID_SET:
+                continue
 
-    if len(q) > max_len:
-        q = q[:max_len] + "<br><br>...(完整内容请点击链接查看)"
+            teacher = TEACHER_BY_UID[uid]
+            mid = str(p.get("id", ""))
+            text = p.get("text", "")
+            created = p.get("created_at", "")
 
-    if a and len(a) > max_len:
-        a = a[:max_len] + "<br><br>...(完整内容请点击链接查看)"
+            # 检测截断：如果文本含"全文"或 isLongText（被截断），尝试获取完整内容
+            truncated = ("全文" in text and ("http://m.weibo.cn" in text or "t.cn" in text)) or p.get("isLongText")
+            full_text = None
+            if truncated:
+                full_text = fetch_full_post(token, mid)
+                if full_text and len(full_text) > len(text):
+                    text = full_text
+                    time.sleep(0.3)
 
-    # 去除AI开场白
-    q = re.sub(r'^[^。\n<br]{2,25}(?:是|为)(?:法考|法律职业|知名|资深)[^。\n<br]*?[。\n<br]', '', q).strip()
+            post_type, q_num = classify_post({"text": text})
 
-    # HTML转义
-    def escape_safe(s):
-        parts = re.split(r'(<[^>]+>)', s)
-        result = []
-        for part in parts:
-            if part.startswith('<') and part.endswith('>'):
-                result.append(part)
-            else:
-                result.append(part.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
-        return ''.join(result)
+            # 如果截断无法获取完整内容，给文本加提示
+            if truncated and not full_text:
+                text = text.replace("...全文：", f"\n\n⚠️ 原文较长，以下为截断版本，完整内容请点击原文链接\n（截断处）...全文：")
 
-    q = escape_safe(q).replace('\n', '<br>')
-    a = escape_safe(a).replace('\n', '<br>') if a else ""
+            teacher_posts[teacher["name"]].append((mid, text, created, q_num, post_type))
 
-    return q, a
+        max_id = int(posts[-1].get("id", 0)) - 1
+        time.sleep(API_DELAY)
+
+    return teacher_posts
 
 
-# ============ 邮件 ============
+def process_teacher(subject, teacher_info, posts, question_cache):
+    """
+    处理单个老师的帖子，返回结果字典。
+    核心逻辑：
+    1. 今天发的新题目 → 直接展示
+    2. 今天发的答案 → 从缓存找昨天的题目配对
+    3. 都没有 → 返回None
+    """
+    name = teacher_info["name"]
+    color = teacher_info["color"]
 
-def send_email(subject, html_body):
-    """通过QQ邮箱SMTP发送"""
-    msg = MIMEMultipart("alternative")
-    msg["From"] = QQ_EMAIL
-    msg["To"] = QQ_EMAIL
-    msg["Subject"] = subject
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    questions = [(mid, text, created, qn) for mid, text, created, qn, pt in posts if pt == "question" and qn]
+    answers = [(mid, text, created, qn) for mid, text, created, qn, pt in posts if pt == "answer" and qn]
 
-    try:
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
-        server.login(QQ_EMAIL, QQ_SMTP_CODE)
-        server.sendmail(QQ_EMAIL, [QQ_EMAIL], msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"  ❌ 邮件发送失败: {e}")
-        return False
+    print(f"   {name}: {len(questions)}个题目帖, {len(answers)}个答案帖")
+
+    # 策略1: 今天有答案帖 → 尝试配对
+    if answers:
+        best_answer = answers[0]  # 最新的答案
+        a_mid, a_text, a_created, a_num = best_answer
+
+        # 从缓存找题目
+        cached_q = find_cached_question(name, a_num, question_cache)
+        if cached_q:
+            q_text = cached_q["text"]
+            q_link = cached_q["weibo_link"]
+            print(f"   ✅ {name} 缓存配对: Q{a_num} 答案 + 缓存题目")
+        else:
+            # 缓存没命中，用答案帖文本提取题目描述
+            q_text = f"📌 {name} 每日一题 第{a_num}题\n（题目缓存未命中，仅展示答案）"
+            q_link = ""
+            print(f"   ⚠️ {name} Q{a_num} 答案缓存未命中")
+
+        # 同时检查今天是否也发了新题
+        if questions:
+            new_q = questions[0]
+            new_mid, new_text, new_created, new_num = new_q
+            if new_num != a_num:
+                # 缓存新题目
+                store_question_cache(name, new_num, new_text, f"https://weibo.com/detail/{new_mid}", new_created, question_cache)
+
+        return {
+            "question": format_html(q_text),
+            "answer": format_html(a_text),
+            "question_link": q_link,
+            "answer_link": f"https://weibo.com/detail/{a_mid}",
+            "source_label": f"Q{a_num} ✅完整(缓存配对)",
+            "q_num": a_num,
+            "is_complete": bool(cached_q),
+        }
+
+    # 策略2: 今天只有题目帖 → 缓存并展示
+    if questions:
+        best_q = questions[0]
+        q_mid, q_text, q_created, q_num = best_q
+        weibo_link = f"https://weibo.com/detail/{q_mid}"
+        store_question_cache(name, q_num, q_text, weibo_link, q_created, question_cache)
+
+        return {
+            "question": format_html(q_text),
+            "answer": f"📌 今日新题，答案将于明日公布",
+            "question_link": weibo_link,
+            "answer_link": "",
+            "source_label": f"Q{q_num} 🆕新题",
+            "q_num": q_num,
+            "is_complete": False,
+        }
+
+    return None
 
 
-# ============ 报告构建 ============
+# ============ 邮件和报告 ============
 
 def build_html_report(slot_results):
     """构建Q&A格式HTML邮件"""
@@ -1319,7 +451,6 @@ strong.law {{ color:#c0392b; font-weight:600; }}
 strong.num {{ color:#2980b9; font-weight:600; }}
 .link-row {{ padding:8px 16px; background:#fafafa; border-top:1px solid #f5f5f5; font-size:12px; }}
 .link-row a {{ color:#6c5ce7; text-decoration:none; }}
-.link-row a:hover {{ text-decoration:underline; }}
 .summary {{ background:#f8f9fa; margin:10px 12px; border-radius:8px; padding:12px 16px; font-size:12px; color:#888; text-align:center; }}
 .summary b {{ color:#2c3e50; }}
 .footer {{ text-align:center; padding:16px; font-size:10px; color:#ccc; }}
@@ -1336,58 +467,43 @@ strong.num {{ color:#2980b9; font-weight:600; }}
   .link-row {{ background:#0f3460; border-color:#1a1a2e; }}
 }}
 </style></head><body>
-    <div class="header">
+<div class="header">
   <h1>📝 法考每日一题</h1>
   <div class="date">{today} {weekday}</div>
-  <div class="sub">v3.2 · 全量回溯缓存 · 智能题目提取 · Q&A完整呈现</div>
+  <div class="sub">v4.0 · OAuth2.0 · friends_timeline · 真实帖子完整抓取</div>
 </div>
 """
-    success_count = 0
-    real_post_count = 0  # 从真实帖子获取的
-    complete_count = 0   # Q&A完整配对的
-    alt_count = 0
 
-    for subject, result in slot_results.items():
-        color = result.get("color", "#636e72")
+    success_count = 0
+    complete_count = 0
+
+    for subject in TEACHERS:
+        teacher = TEACHERS[subject]
+        result = slot_results.get(subject, {})
+        color = result.get("color", teacher["color"])
         source_label = result.get("source_label", "")
-        is_alternative = result.get("is_alternative", False)
-        is_real_post = result.get("is_real_post", False)
-        is_complete = result.get("is_complete", False)
         question_html = result.get("question", "")
         answer_html = result.get("answer", "")
         question_link = result.get("question_link", "")
         answer_link = result.get("answer_link", "")
         error = result.get("error", False)
+        is_complete = result.get("is_complete", False)
         has_content = bool(question_html and not error)
 
         if has_content:
             success_count += 1
-            if is_real_post:
-                real_post_count += 1
             if is_complete:
                 complete_count += 1
-            if is_alternative:
-                alt_count += 1
 
         html += '<div class="card">\n'
         html += '  <div class="card-head">\n'
         html += f'    <span class="dot" style="background:{color}"></span>\n'
-        html += f'    <span class="name">{subject}</span>\n'
+        html += f'    <span class="name">{subject} · {teacher["name"]}</span>\n'
         if has_content and source_label:
             html += f'    <span class="src">{source_label}</span>\n'
         if has_content:
-            if is_real_post and is_complete:
-                badge_text = "📡完整Q&A"
-                badge_color = "#27ae60"
-            elif is_real_post:
-                badge_text = "📡新题"
-                badge_color = "#3498db"
-            elif is_alternative:
-                badge_text = "替代"
-                badge_color = "#6c5ce7"
-            else:
-                badge_text = "已更新"
-                badge_color = "#27ae60"
+            badge_text = "完整Q&A" if is_complete else "新题"
+            badge_color = "#27ae60" if is_complete else "#3498db"
             html += f'    <span class="badge" style="background:{badge_color}">{badge_text}</span>\n'
         elif error:
             html += f'    <span class="badge" style="background:#f39c12">故障</span>\n'
@@ -1396,40 +512,18 @@ strong.num {{ color:#2980b9; font-weight:600; }}
         html += '  </div>\n'
 
         if has_content:
-            a_len = len(answer_html) if answer_html else 0
+            html += '  <div class="q-section">\n'
+            html += '    <span class="q-label">📌 题目</span><br>\n'
+            html += f'    {question_html}\n'
+            html += '  </div>\n'
 
-            if is_real_post and a_len >= 30:
-                # 真实帖子且有答案：Q&A分隔模式
-                html += '  <div class="q-section">\n'
-                html += '    <span class="q-label">📌 题目</span><br>\n'
-                html += f'    {question_html}\n'
-                html += '  </div>\n'
-
-                html += '  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>\n'
-
-                html += '  <div class="a-section">\n'
-                html += '    <span class="a-label">✅ 答案 / 解析</span><br>\n'
-                html += f'    {answer_html}\n'
-                html += '  </div>\n'
-            elif a_len >= 100:
-                # AI摘要且有长答案
-                html += '  <div class="q-section">\n'
-                html += '    <span class="q-label">📌 题目</span><br>\n'
-                html += f'    {question_html}\n'
-                html += '  </div>\n'
+            if answer_html and len(answer_html) > 30:
                 html += '  <div class="a-divider"><span>▼ 答 案 在 下 方 ▼</span></div>\n'
                 html += '  <div class="a-section">\n'
                 html += '    <span class="a-label">✅ 答案 / 解析</span><br>\n'
                 html += f'    {answer_html}\n'
                 html += '  </div>\n'
-            else:
-                html += '  <div class="q-section">\n'
-                html += '    <span class="q-label">📌 综合摘要</span><br>\n'
-                html += f'    {question_html}\n'
-                if answer_html:
-                    html += '    <br><br><span style="display:inline-block;background:#d4edda;color:#155724;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;">✅ 答案</span><br>\n'
-                    html += f'    {answer_html}\n'
-                html += '  </div>\n'
+
         elif error:
             html += f'  <div class="no-result">⚠️ {error}</div>\n'
         else:
@@ -1446,213 +540,136 @@ strong.num {{ color:#2980b9; font-weight:600; }}
 
         html += '</div>\n'
 
-    # 汇总
-    total = len(slot_results)
+    total = len(TEACHERS)
     html += '<div class="summary">\n'
     html += f'<b>{success_count}/{total}</b> 科目已获取'
     if complete_count > 0:
-        html += f' · <b>{complete_count}</b> 完整Q&A 🔗'
-    if real_post_count > 0:
-        html += f' · <b>{real_post_count}</b> 来自真实帖子 📡'
-    if alt_count > 0:
-        html += f' · <b>{alt_count}</b> 使用替代名师'
-    html += ' · 自动生成于 GitHub Actions</div>\n'
+        html += f' · <b>{complete_count}</b> 完整Q&A'
+    html += f' · OAuth2.0直连 · 真实帖子完整抓取</div>\n'
 
     html += '<div class="footer">\n'
-    html += '<p>☁️ 法考云端监控 v3.2 · 每日8:30 · 全量回溯缓存智能Q&A配对</p>\n'
+    html += '<p>☁️ 法考云端监控 v4.0 · 每日8:30 · OAuth2.0 friends_timeline</p>\n'
     html += '</div>\n'
     html += '</body></html>'
 
     return html
 
 
+def send_email(subject, html_body):
+    """通过QQ邮箱SMTP发送"""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = QQ_EMAIL
+    msg["To"] = QQ_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
+        server.login(QQ_EMAIL, QQ_SMTP_CODE)
+        server.sendmail(QQ_EMAIL, [QQ_EMAIL], msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"  ❌ 邮件发送失败: {e}")
+        return False
+
+
 # ============ 主流程 ============
 
 def main():
     tz = timezone(timedelta(hours=8))
-    print(f"===== 法考每日一题 v3.0 · 真实帖子抓取版 =====")
+    print(f"===== 法考每日一题 v4.0 · OAuth2.0 + friends_timeline =====")
     print(f"执行时间: {datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')} (GMT+8)\n")
 
-    # 获取token
-    print("🔑 获取微博API Token...")
-
-    # GitHub Actions环境: 强制刷新token避免本地缓存被限流
-    is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
-
+    # Step 1: 获取 access_token
+    print("🔑 获取 OAuth2.0 access_token...")
     try:
-        if is_github_actions:
-            try:
-                token = get_weibo_token(force_refresh=True)
-                print(f"   ✅ GitHub环境，已刷新Token (前8位: {token[:8]}...)\n")
-            except Exception as e:
-                print(f"   ⚠️ 刷新失败({e})，回退缓存...")
-                token = get_weibo_token()
-                print(f"   ✅ 缓存Token已就绪 (前8位: {token[:8]}...)\n")
-        else:
-            token = get_weibo_token()
-            print(f"   ✅ Token已就绪 (前8位: {token[:8]}...)\n")
+        token = get_oauth_token()
+        print(f"   ✅ Token已就绪 (前8位: {token[:8]}...)\n")
     except Exception as e:
         print(f"   ❌ Token获取失败: {e}")
         fallback_html = f"""<html><body>
-<h2>⚠️ 法考每日一题 · 微博API故障</h2>
-<p>微博Token获取失败: {e}</p>
+<h2>⚠️ 法考每日一题 · OAuth2.0 Token失效</h2>
+<p>错误: {e}</p>
 <p>时间: {datetime.now(tz)} (GMT+8)</p>
-<p>请检查AppId/AppSecret是否有效。</p>
-<hr><p style="color:#999;font-size:12px">法考云端监控系统</p>
+<p>需要手动重新授权获取新的 access_token。</p>
+<hr><p style="color:#999;font-size:12px">法考云端监控 v4.0</p>
 </body></html>"""
-        send_email("⚠️【法考每日一题】微博API故障 | 需检查凭据", fallback_html)
+        send_email("⚠️【法考每日一题】OAuth2.0 Token失效 | 需重新授权", fallback_html)
         return
 
-    # 逐个科目抓取
-    slot_results = {}
-    success_count = 0
-    real_post_count = 0
-    alt_count = 0
-    complete_count = 0  # Q&A完整配对数
-    api_calls = 0
-
-    # 加载跨天题目缓存
+    # Step 2: 加载题目缓存
     question_cache = load_question_cache()
-    print(f"📦 题目缓存: {len(question_cache)} 条（跨天配对用）\n")
+    print(f"📦 题目缓存: {len(question_cache)} 条\n")
 
-    for subject, slot in TEACHER_SLOTS.items():
-        if not check_api_ok():
-            print(f"\n⚠️ API调用已达上限 ({API_CALL_COUNT}/{API_LIMIT})，停止后续抓取")
-            break
+    # Step 3: 拉取关注人时间线
+    print(f"📡 拉取关注人时间线（最多{TIMELINE_PAGES}页×{TIMELINE_COUNT}条）...")
+    teacher_posts = fetch_all_teacher_posts(token)
 
-        display = slot["display_name"]
-        color = slot["color"]
-        hashtag_query = slot["hashtag_query"]
-        teacher_filter = slot["teacher_filter"]
-        fallback_queries = slot["fallback_queries"]
-        uid = slot.get("uid", None)
+    total_teacher_posts = sum(len(v) for v in teacher_posts.values())
+    print(f"   ✅ 共 {total_teacher_posts} 条老师帖子\n")
 
-        print(f"🔍 {subject} ({display})")
-        print(f"   📡 一级抓取: hashtag='{hashtag_query}' filter='{teacher_filter}' uid={uid}...")
+    # Step 4: 逐个处理
+    slot_results = {}
+    for subject, teacher in TEACHERS.items():
+        name = teacher["name"]
+        posts = teacher_posts.get(name, [])
 
-        try:
-            # ============ 一级：真实帖子抓取（含跨天缓存配对） ============
-            result = fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache, uid=uid)
-            api_calls += 1  # 搜索调用
+        print(f"🔍 {subject} ({name})")
+        result = process_teacher(subject, teacher, posts, question_cache)
 
-            if result:
-                q_text = result["question_text"]
-                a_text = result["answer_text"]
-                q_link = result.get("question_link", "")
-                a_link = result.get("answer_link", "")
-                source_label = result["source_label"]
-                is_complete = result.get("is_complete", False)
-
-                q_html = format_question_html(q_text)
-                a_html = format_answer_html(a_text)
-
-                slot_results[subject] = {
-                    "color": color,
-                    "source_label": source_label,
-                    "question": q_html,
-                    "answer": a_html,
-                    "question_link": q_link,
-                    "answer_link": a_link,
-                    "is_alternative": False,
-                    "is_real_post": True,
-                    "is_complete": is_complete,
-                    "error": False,
-                }
-                success_count += 1
-                real_post_count += 1
-                if is_complete:
-                    complete_count += 1
-                content_len = len(q_text) + len(a_text)
-                print(f"   ✅ 真实帖子命中: {source_label} ({content_len} 字符)")
-            else:
-                # ============ 二级：AI摘要fallback ============
-                print(f"   📡 一级未命中，尝试二级（AI摘要+替代名师）...")
-                fb_result = fetch_teacher_fallback(fallback_queries, token)
-                api_calls += len(fallback_queries)
-
-                if fb_result:
-                    fb_label, q_html, a_html, wb_link, is_alt = fb_result
-                    slot_results[subject] = {
-                        "color": color,
-                        "source_label": fb_label,
-                        "question": q_html,
-                        "answer": a_html,
-                        "question_link": wb_link,
-                        "answer_link": "",
-                        "is_alternative": is_alt,
-                        "is_real_post": False,
-                        "is_complete": False,
-                        "error": False,
-                    }
-                    success_count += 1
-                    if is_alt:
-                        alt_count += 1
-                    tag = "📡替代" if is_alt else "✅"
-                    print(f"   {tag} AI摘要命中: {fb_label}")
-                else:
-                    slot_results[subject] = {
-                        "color": color,
-                        "source_label": "",
-                        "question": "",
-                        "answer": "",
-                        "question_link": "",
-                        "answer_link": "",
-                        "is_alternative": False,
-                        "is_real_post": False,
-                        "is_complete": False,
-                        "error": False,
-                    }
-                    print(f"   ⚪ 一级二级均未命中")
-
-        except Exception as e:
-            print(f"   ❌ 错误: {e}")
+        if result:
             slot_results[subject] = {
-                "color": color,
-                "source_label": "",
+                "color": teacher["color"],
+                **result,
+                "error": False,
+            }
+        else:
+            slot_results[subject] = {
+                "color": teacher["color"],
                 "question": "",
                 "answer": "",
                 "question_link": "",
                 "answer_link": "",
-                "is_alternative": False,
-                "is_real_post": False,
+                "source_label": "",
+                "q_num": None,
                 "is_complete": False,
-                "error": str(e),
+                "error": False,
             }
+            print(f"   ⚪ 未找到每日一题")
 
-    # 统计
-    total_slots = len(TEACHER_SLOTS)
+    # Step 5: 保存缓存
+    save_question_cache(question_cache)
+
+    # Step 6: 统计
+    total = len(TEACHERS)
+    success_count = sum(1 for r in slot_results.values() if r.get("question"))
+    complete_count = sum(1 for r in slot_results.values() if r.get("is_complete"))
+
     print(f"\n{'='*60}")
-    print(f"📊 结果: {success_count}/{total_slots} 科目获取成功")
-    print(f"   📡 真实帖子: {real_post_count}")
-    print(f"   🔗 Q&A完整配对: {complete_count}")
-    if alt_count > 0:
-        print(f"   🔄 替代名师: {alt_count}")
-    print(f"   🔢 API调用: {API_CALL_COUNT}/100 (小时限额)")
+    print(f"📊 结果: {success_count}/{total} 科目获取成功 · {complete_count} 完整Q&A")
 
-    # 构建并发送报告
     if success_count == 0:
-        print(f"\n⚠️ 所有科目均获取失败，跳过邮件发送（避免空报告）")
-        print(f"   下次运行: 明日 8:30 CST (API限额将重置)")
+        print(f"\n⚠️ 所有科目均获取失败，跳过邮件发送")
         return
 
+    # Step 7: 构建HTML并发送
     html = build_html_report(slot_results)
 
-    # 本地保存HTML预览（便于调试和事后查看）
+    # 保存本地预览
     try:
         today_ymd = datetime.now(tz).strftime("%Y%m%d")
         preview_path = f"preview-{today_ymd}.html"
         with open(preview_path, "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"\n💾 HTML预览已保存: {preview_path}")
+        print(f"💾 HTML预览已保存: {preview_path}")
     except Exception as e:
-        print(f"\n⚠️ HTML预览保存失败: {e}")
+        print(f"⚠️ HTML预览保存失败: {e}")
 
     today_mmdd = datetime.now(tz).strftime("%m/%d")
-    subject = f"【法考每日一题】{today_mmdd} | v3.2全量回溯 | {success_count}/{total_slots}已获取"
+    subject = f"【法考每日一题】{today_mmdd} | v4.0 | {success_count}/{total}已获取"
     if complete_count > 0:
         subject += f"({complete_count}完整Q&A)"
-    if real_post_count > 0:
-        subject += f" · {real_post_count}真实帖"
 
     if send_email(subject, html):
         print(f"\n✅ 任务完成! 邮件已发送至 {QQ_EMAIL}")

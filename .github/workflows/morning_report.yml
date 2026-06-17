@@ -1,4 +1,4 @@
-name: 法考每日一题 v3.2（全量回溯智能配对）（8:30）
+name: 法考每日一题 v4.0（OAuth2.0 friends_timeline）（8:30）
 
 on:
   schedule:
@@ -20,27 +20,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system deps (tesseract OCR + Chinese lang)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
-
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Weibo daily questions（v3.2 全量回溯智能配对）
+      - name: Run Weibo daily questions（v4.0 OAuth2.0 friends_timeline）
         env:
           QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
-          WEIBO_APP_ID: ${{ secrets.WEIBO_APP_ID }}
+          WEIBO_APP_KEY: ${{ secrets.WEIBO_APP_KEY }}
           WEIBO_APP_SECRET: ${{ secrets.WEIBO_APP_SECRET }}
+          WEIBO_ACCESS_TOKEN: ${{ secrets.WEIBO_ACCESS_TOKEN }}
         run: python weibo_daily_questions.py
 
       - name: Commit cache update
         run: |
           git config user.name "Fakao Bot"
           git config user.email "bot@fakao-monitor.local"
-          git add weibo_search_cache.json
-          git add weibo_post_cache.json 2>/dev/null || true
+          git add weibo_oauth_token.json 2>/dev/null || true
           git add weibo_question_cache.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: update weibo caches [skip ci]"
           git push
