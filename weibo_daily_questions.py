@@ -43,10 +43,10 @@ TEACHERS = {
     "行政法": {"name": "李佳", "uid": 1552849431, "screen_name": "行政法李佳", "color": "#e74c3c"},
     "刑法":   {"name": "柏浪涛", "uid": 2523185197, "screen_name": "柏浪涛的刑法观", "color": "#e67e22"},
     "民法":   {"name": "孟献贵", "uid": 2342740757, "screen_name": "民商法孟献贵", "color": "#2980b9"},
-    "民诉":   {"name": "戴鹏", "uid": 2758385724, "screen_name": "法律人戴鹏", "color": "#8e44ad"},
+    "民诉":   {"name": "赵亚南", "uid": 6540353329, "screen_name": "民诉法赵亚男", "color": "#8e44ad"},
     "刑诉":   {"name": "左宁", "uid": 3153511812, "screen_name": "左宁刑诉", "color": "#27ae60"},
     "三国法": {"name": "杨帆", "uid": 2629450315, "screen_name": "三国法杨帆", "color": "#16a085"},
-    "理论法": {"name": "马峰", "uid": 1826780577, "screen_name": "理论法马峰", "color": "#2c3e50"},
+    "理论法": {"name": "高晖", "uid": 2212640284, "screen_name": "理论法高晖云", "color": "#2c3e50"},
     "商经知": {"name": "鄢梦萱", "uid": 5568788458, "screen_name": "商经法鄢梦萱", "color": "#d35400"},
 }
 
