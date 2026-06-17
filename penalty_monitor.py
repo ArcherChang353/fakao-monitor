@@ -11,7 +11,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # ============ 配置 ============
 QQ_EMAIL = "jewelljaja@foxmail.com"
