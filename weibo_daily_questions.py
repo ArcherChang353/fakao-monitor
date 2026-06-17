@@ -39,6 +39,7 @@ WEIBO_APP_SECRET = os.environ["WEIBO_APP_SECRET"]
 TOKEN_ENDPOINT = "https://open-im.api.weibo.com/open/auth/ws_token"
 SEARCH_ENDPOINT = "https://open-im.api.weibo.com/open/wis/search_query"
 STATUS_API = "https://open-im.api.weibo.com/open/weibo/status_show"
+USER_TIMELINE_API = "https://open-im.api.weibo.com/open/weibo/statuses/user_timeline"
 
 # ============ 8科目配置（真实帖子抓取版） ============
 # 每位老师配置：hashtag搜索词 + 教师筛选名 + 替代搜索词（fallback）
@@ -46,6 +47,7 @@ TEACHER_SLOTS = {
     "行政法": {
         "display_name": "李佳（行政法）",
         "color": "#e74c3c",
+        "uid": "2510840",
         "hashtag_query": "行政法每日一题",
         "teacher_filter": "行政法李佳",
         "fallback_queries": [
@@ -55,6 +57,7 @@ TEACHER_SLOTS = {
     "刑法": {
         "display_name": "柏浪涛（刑法）",
         "color": "#e67e22",
+        "uid": "3546604065514065",
         "hashtag_query": "柏浪涛每日一题",
         "teacher_filter": "柏浪涛",
         "fallback_queries": [
@@ -64,6 +67,7 @@ TEACHER_SLOTS = {
     "民法": {
         "display_name": "孟献贵（民法）",
         "color": "#2980b9",
+        "uid": "3546614072148177",
         "hashtag_query": "孟献贵每日一题",
         "teacher_filter": "孟献贵",
         "fallback_queries": [
@@ -75,6 +79,7 @@ TEACHER_SLOTS = {
     "民诉": {
         "display_name": "戴鹏（民诉）",
         "color": "#8e44ad",
+        "uid": "19568993",
         "hashtag_query": "戴鹏每日一题",
         "teacher_filter": "戴鹏",
         "fallback_queries": [
@@ -85,6 +90,7 @@ TEACHER_SLOTS = {
     "刑诉": {
         "display_name": "左宁（刑诉）",
         "color": "#27ae60",
+        "uid": "1733061450",
         "hashtag_query": "左宁每日一题",
         "teacher_filter": "左宁",
         "fallback_queries": [
@@ -94,6 +100,7 @@ TEACHER_SLOTS = {
     "三国法": {
         "display_name": "杨帆（三国法）",
         "color": "#16a085",
+        "uid": "276804772",
         "hashtag_query": "杨帆三国法 每日一题",
         "teacher_filter": "杨帆",
         "fallback_queries": [
@@ -104,6 +111,7 @@ TEACHER_SLOTS = {
     "理论法": {
         "display_name": "马峰（理论法）",
         "color": "#2c3e50",
+        "uid": "3546614072148178",
         "hashtag_query": "马峰每日一题",
         "teacher_filter": "马峰",
         "fallback_queries": [
@@ -115,6 +123,7 @@ TEACHER_SLOTS = {
     "商经知": {
         "display_name": "郄鹏恩（商经知）",
         "color": "#d35400",
+        "uid": "3546614065514066",
         "hashtag_query": "郄鹏恩每日一题",
         "teacher_filter": "郄鹏恩",
         "fallback_queries": [
@@ -353,6 +362,11 @@ def fetch_status(mblogid, token, post_cache=None, _retry=0):
         track_api_call()
         if result.get("code") == 0:
             data = result.get("data", {})
+            # 🔑 关键修复：微博长文在 longText 字段，text 是截断版
+            long_text = data.get("longText") or ""
+            if long_text and len(long_text) > len(data.get("text", "")):
+                print(f"      📜 检测到长文，已替换截断文本 ({len(data.get('text',''))}→{len(long_text)}字)")
+                data["text"] = long_text
     except Exception as e:
         print(f"      status_show异常 ({mblogid}): {e}")
 
@@ -394,6 +408,41 @@ def fetch_status(mblogid, token, post_cache=None, _retry=0):
         pass
 
     return None
+
+
+def fetch_teacher_timeline(uid, token, post_cache=None, max_count=10):
+    """
+    通过 user_timeline API 直接拉取老师最近帖子（不依赖智搜）。
+    返回: [(mblogid, text, created_at, user_screen_name), ...] 按时间倒序
+    """
+    if not check_api_ok():
+        return []
+
+    url = f"{USER_TIMELINE_API}?token={token}&uid={uid}&count={max_count}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=15)
+        result = json.loads(resp.read())
+        track_api_call()
+        if result.get("code") != 0:
+            print(f"      timeline API 错误 code={result.get('code')} msg={result.get('message','')[:60]}")
+            return []
+        posts = result.get("data", {}).get("statuses", [])
+        print(f"      📜 timeline 拉到 {len(posts)} 条帖子")
+        results = []
+        for p in posts:
+            mid = str(p.get("mid") or p.get("id") or "")
+            text = p.get("longText") or p.get("text", "")
+            created = p.get("created_at", "")
+            user = p.get("user", {}).get("screen_name", "")
+            results.append((mid, text, created, user))
+            # 同时写入 post_cache
+            if post_cache is not None and mid:
+                p["text"] = text  # 确保用 longText 覆盖
+                post_cache[mid] = p
+        return results
+    except Exception as e:
+        print(f"      timeline 异常: {e}")
+        return []
 
 
 # ============ 帖子分类与内容提取 ============
@@ -543,18 +592,32 @@ def extract_image_urls_from_post(post_data):
     pic_urls = post_data.get("pic_urls") or []
     for p in pic_urls:
         if isinstance(p, dict):
-            url = p.get("large") or p.get("thumbnail_pic") or p.get("bmiddle_pic") or p.get("original_pic") or ""
-            if url:
+            # large 可能是 dict{"url": "..."} 或直接的URL字符串
+            large_val = p.get("large")
+            if isinstance(large_val, dict):
+                url = large_val.get("url", "")
+            elif isinstance(large_val, str):
+                url = large_val
+            else:
+                url = (p.get("thumbnail_pic") or p.get("bmiddle_pic")
+                         or p.get("original_pic") or "")
+            if url and isinstance(url, str):
                 urls.append(url)
         elif isinstance(p, str) and p.startswith("http"):
             urls.append(p)
 
-    # 方式2: pics（旧版字段）
+    # 方式2: pics（旧版字段，注意 large 可能是 dict）
     pics = post_data.get("pics") or []
     for p in pics:
         if isinstance(p, dict):
-            url = p.get("large", {}).get("url") or p.get("url") or ""
-            if url:
+            large_val = p.get("large")
+            if isinstance(large_val, dict):
+                url = large_val.get("url", "")
+            elif isinstance(large_val, str):
+                url = large_val
+            else:
+                url = p.get("url") or ""
+            if url and isinstance(url, str):
                 urls.append(url)
         elif isinstance(p, str) and p.startswith("http"):
             urls.append(p)
@@ -772,83 +835,122 @@ def fetch_teacher_posts(hashtag_query, teacher_filter, token, question_cache=Non
     """
     if question_cache is None:
         question_cache = {}
-    
-    # Step 1: 搜索hashtag获取mblogids
-    data = search_zhisou(hashtag_query, token)
-    if not data:
-        return None
 
-    mblogids = extract_mblogids(data)
-    if not mblogids:
-        return None
+    # ===================================================================
+    # Step 0（新）: 优先用 timeline API 直接拉老师最近帖子
+    # ===================================================================
+    own_posts = []   # [(mid, text, created_at, user_screen_name)]
+    if uid:
+        print(f"      📜 尝试 timeline API (UID={uid})...")
+        own_posts = fetch_teacher_timeline(uid, token,
+                                           post_cache=load_post_cache() if not post_cache else post_cache)
+        # 只保留含"每日一题"的帖子
+        daily_posts = [p for p in own_posts if '每日一题' in (p[1] or '')]
+        if daily_posts:
+            print(f"      ✅ timeline 命中 {len(daily_posts)} 条含「每日一题」的帖子")
+        else:
+            print(f"      ⚠️  timeline 未含「每日一题」，将走智搜 fallback")
+    else:
+        print(f"      ⚠️  未配置 UID，跳过 timeline，直走智搜")
 
-    # 合并fallback查询的mblogid
-    if check_api_ok():
-        fallback_query = f"{teacher_filter} 每日一题"
-        fb_data = search_zhisou(fallback_query, token)
-        if fb_data:
-            fb_ids = extract_mblogids(fb_data)
-            mblogids = sorted(set(mblogids + fb_ids), reverse=True)
-            print(f"      hashtag+fallback合并: {len(set(mblogids))} 个唯一引用帖")
+    # 把 timeline 拿到的帖子注入 questions/answers（复用后续配对逻辑）
+    # 先加载 post_cache 供 fetch_status 使用
+    post_cache = load_post_cache() if not post_cache else post_cache
+    questions = []
+    answers = []
 
-    fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
-    print(f"      检查最近 {fetch_n} 个帖子...")
-
-    # 加载帖子缓存
-    post_cache = load_post_cache()
-
-    # Step 2: 获取帖子并分类
-    questions = []  # (mblogid, q_num, text, created_at, user, is_third)
-    answers = []    # (mblogid, q_num, text, created_at, user, is_third)
-
-    for mid in mblogids[:fetch_n]:
-        if not check_api_ok():
-            print(f"      ⚠️ API调用接近上限({API_CALL_COUNT}/{API_LIMIT})，停止抓取")
-            break
-
-        post = fetch_status(mid, token, post_cache)
-        if not post:
-            continue
-
-        post_type, q_num, is_third = classify_post(post, teacher_filter)
-        text = post.get("text", "")
-        created = post.get("created_at", "")
-        user = post.get("user", {}).get("screen_name", "")
-
-        if post_type == "question":
-            # 尝试从帖子提取完整题目，同时拿到图片URL
-            q_extracted, image_urls = try_extract_question_from_post(post)
-            # 如果有题目图片，拼成<img>标签塞到题目文字前面
-            if image_urls:
-                img_tags = "<div style=\"margin:10px 0\">" + "".join(
-                    f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
-                    for u in image_urls[:3]
-                ) + "</div>"
-                q_extracted = img_tags + "<br>" + q_extracted
-            questions.append((mid, q_num, q_extracted, created, user, is_third))
-            img_tag = " 📷" if image_urls else ""
-            third_tag = "📎三方" if is_third else "👤本人"
-            print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{img_tag} | {created}")
-            # 🔥 存入题目缓存，供明天配对答案
-            if q_num is not None:
-                weibo_link = f"https://weibo.com/detail/{mid}"
-                store_question_in_cache(teacher_filter, q_num, q_extracted, weibo_link, created, user, question_cache)
-        elif post_type == "answer":
-            answers.append((mid, q_num, text, created, user, is_third))
-            third_tag = "📎三方" if is_third else "👤本人"
-            print(f"         ✅ 答案帖 Q{q_num} | {user} {third_tag} | {created}")
-            # 🔥 检测嵌入的新题（李佳模式：同帖含答案视频+新题文字）
-            if not is_third and q_num is not None:
-                emb_q_num, emb_q_text = detect_embedded_question(text, q_num)
-                if emb_q_num and emb_q_text:
-                    questions.append((mid, emb_q_num, emb_q_text, created, user, False))
-                    print(f"         🔀 从答案帖中检出嵌入新题 Q{emb_q_num} ({len(emb_q_text)}字)")
+    if own_posts:
+        # 直接用 timeline 拿到的帖子，不再调 fetch_status（已缓存在 post_cache）
+        for (mid, text, created, user) in own_posts:
+            if not check_api_ok():
+                break
+            # 构造伪 post_data 供 classify_post 使用
+            post_data = post_cache.get(mid) or {"text": text, "user": {"screen_name": user}, "created_at": created}
+            post_type, q_num, is_third = classify_post(post_data, teacher_filter)
+            if post_type == "question":
+                q_text, image_urls = try_extract_question_from_post(post_data)
+                if image_urls:
+                    img_tags = "<div style=\"margin:10px 0\">" + "".join(
+                        f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
+                        for u in image_urls[:3]
+                    ) + "</div>"
+                    q_text = img_tags + "<br>" + (q_text or "")
+                questions.append((mid, q_num, q_text or text, created, user, is_third))
+                print(f"         🎯 [timeline]题目帖 Q{q_num} | {user}")
+                if q_num is not None:
                     weibo_link = f"https://weibo.com/detail/{mid}"
-                    store_question_in_cache(teacher_filter, emb_q_num, emb_q_text, weibo_link, created, user, question_cache)
-        elif post_type == "collection":
-            print(f"         📦 合集帖 | {user} | {created}")
+                    store_question_in_cache(teacher_filter, q_num, q_text or text, weibo_link, created, user, question_cache)
+            elif post_type == "answer":
+                answers.append((mid, q_num, text, created, user, is_third))
+                print(f"         ✅ [timeline]答案帖 Q{q_num} | {user}")
+            time.sleep(API_DELAY)
 
-        time.sleep(API_DELAY)
+    # ===================================================================
+    # Step 1（旧）: 智搜 hashtag 搜索，作为 fallback
+    # ===================================================================
+    if not questions and not answers:
+        print(f"      🔍 智搜 hashtag='{hashtag_query}'...")
+        data = search_zhisou(hashtag_query, token)
+        if not data:
+            return None
+        mblogids = extract_mblogids(data)
+        if not mblogids:
+            return None
+
+        # 合并 fallback 查询的 mblogid
+        if check_api_ok():
+            fb_query = f"{teacher_filter} 每日一题"
+            fb_data = search_zhisou(fb_query, token)
+            if fb_data:
+                fb_ids = extract_mblogids(fb_data)
+                mblogids = sorted(set(mblogids + fb_ids), reverse=True)
+                print(f"      hashtag+fallback合并: {len(set(mblogids))} 个唯一引用帖")
+
+        fetch_n = min(MAX_POSTS_TO_FETCH, len(mblogids))
+        print(f"      检查最近 {fetch_n} 个帖子...")
+
+        for mid in mblogids[:fetch_n]:
+            if not check_api_ok():
+                print(f"      ⚠️ API调用接近上限({API_CALL_COUNT}/{API_LIMIT})，停止抓取")
+                break
+            post = fetch_status(mid, token, post_cache)
+            if not post:
+                continue
+            post_type, q_num, is_third = classify_post(post, teacher_filter)
+            text = post.get("text", "")
+            created = post.get("created_at", "")
+            user = post.get("user", {}).get("screen_name", "")
+            if post_type == "question":
+                q_extracted, image_urls = try_extract_question_from_post(post)
+                if image_urls:
+                    img_tags = "<div style=\"margin:10px 0\">" + "".join(
+                        f'<img src="{u}" style="max-width:100%;border-radius:8px;margin:6px 0;display:block;">'
+                        for u in image_urls[:3]
+                    ) + "</div>"
+                    q_extracted = img_tags + "<br>" + (q_extracted or "")
+                questions.append((mid, q_num, q_extracted or text, created, user, is_third))
+                img_tag = " 📷" if image_urls else ""
+                third_tag = "📎三方" if is_third else "👤本人"
+                print(f"         🎯 题目帖 Q{q_num} | {user} {third_tag}{img_tag} | {created}")
+                if q_num is not None:
+                    weibo_link = f"https://weibo.com/detail/{mid}"
+                    store_question_in_cache(teacher_filter, q_num, q_extracted or text, weibo_link, created, user, question_cache)
+            elif post_type == "answer":
+                answers.append((mid, q_num, text, created, user, is_third))
+                third_tag = "📎三方" if is_third else "👤本人"
+                print(f"         ✅ 答案帖 Q{q_num} | {user} {third_tag} | {created}")
+                if not is_third and q_num is not None:
+                    emb_q_num, emb_q_text = detect_embedded_question(text, q_num)
+                    if emb_q_num and emb_q_text:
+                        questions.append((mid, emb_q_num, emb_q_text, created, user, False))
+                        print(f"         🔀 从答案帖中检出嵌入新题 Q{emb_q_num} ({len(emb_q_text)}字)")
+                        weibo_link = f"https://weibo.com/detail/{mid}"
+                        store_question_in_cache(teacher_filter, emb_q_num, emb_q_text, weibo_link, created, user, question_cache)
+            elif post_type == "collection":
+                print(f"         📦 合集帖 | {user} | {created}")
+            time.sleep(API_DELAY)
+    else:
+        print(f"      ✅ timeline 数据已加载，跳过智搜")
 
     # 保存帖子缓存
     save_post_cache(post_cache)
