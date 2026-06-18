@@ -43,11 +43,11 @@ TEACHERS = {
     "行政法": {"name": "李佳", "uid": 1552849431, "screen_name": "行政法李佳", "color": "#e74c3c"},
     "刑法":   {"name": "柏浪涛", "uid": 2523185197, "screen_name": "柏浪涛的刑法观", "color": "#e67e22"},
     "民法":   {"name": "孟献贵", "uid": 2342740757, "screen_name": "民商法孟献贵", "color": "#2980b9"},
-    "民诉":   {"name": "赵亚南", "uid": 6540353329, "screen_name": "民诉法赵亚男", "color": "#8e44ad"},
+    "民诉":   {"name": "吴志伟", "uid": 2725045285, "screen_name": "民诉吴志伟", "color": "#8e44ad"},
     "刑诉":   {"name": "左宁", "uid": 3153511812, "screen_name": "左宁刑诉", "color": "#27ae60"},
     "三国法": {"name": "杨帆", "uid": 2629450315, "screen_name": "三国法杨帆", "color": "#16a085"},
     "理论法": {"name": "高晖", "uid": 2212640284, "screen_name": "理论法高晖云", "color": "#2c3e50"},
-    "商经知": {"name": "鄢梦萱", "uid": 5568788458, "screen_name": "商经法鄢梦萱", "color": "#d35400"},
+    "商经知": {"name": "郄鹏恩", "uid": 2042198575, "screen_name": "商经法郄鹏恩", "color": "#d35400"},
 }
 
 TEACHER_UID_SET = {t["uid"] for t in TEACHERS.values()}
@@ -175,7 +175,7 @@ def classify_post(post_data):
 
     q_num = extract_q_num(text)
 
-    has_daily = "每日一题" in text
+    has_daily = any(kw in text for kw in ["每日一题", "每日一问"])
     has_options = bool(re.search(r'[A-D][\.\、）\)]', text))
     has_answer_kw = "答案" in text or "解析" in text
     is_collection = any(kw in text for kw in ["笔记", "整理", "汇总", "PDF", "合集"])
