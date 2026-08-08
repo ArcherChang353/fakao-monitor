@@ -1,0 +1,56 @@
+name: 处罚监控-即时发送
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: '邮件标题'
+        required: true
+        type: string
+      body:
+        description: '邮件正文'
+        required: true
+        type: string
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Send email via QQ SMTP
+        env:
+          QQ_SMTP_CODE: ${{ secrets.QQ_SMTP_CODE }}
+          SUBJECT: ${{ inputs.subject }}
+          BODY: ${{ inputs.body }}
+        run: |
+          python -c "
+import os
+import smtplib
+from email.mime.text import MIMEText
+
+QQ_EMAIL = 'jewelljaja@foxmail.com'
+QQ_SMTP_CODE = os.environ['QQ_SMTP_CODE']
+SUBJECT = os.environ['SUBJECT']
+BODY = os.environ['BODY']
+
+msg = MIMEText(BODY, 'plain', 'utf-8')
+msg['From'] = QQ_EMAIL
+msg['To'] = QQ_EMAIL
+msg['Subject'] = SUBJECT
+
+try:
+    server = smtplib.SMTP_SSL('smtp.qq.com', 465, timeout=30)
+    server.login(QQ_EMAIL, QQ_SMTP_CODE)
+    server.sendmail(QQ_EMAIL, [QQ_EMAIL], msg.as_string())
+    server.quit()
+    print('SUCCESS: 邮件已发送')
+except Exception as e:
+    print(f'FAILED: {e}')
+    raise
+"
